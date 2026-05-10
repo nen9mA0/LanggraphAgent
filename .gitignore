@@ -1,0 +1,23 @@
+
+# LangGraph API
+.langgraph_api
+.env
+package-lock.json
+
+*.log
+*.local
+.idea
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+.DS_Store/**
+dist
+frontend/dist
+frontend/dist-ssr
+
+.vscode/**
+node_modules/**
+ref/**
