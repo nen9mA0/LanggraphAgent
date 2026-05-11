@@ -1,75 +1,59 @@
 # Program Workflow
 
-## Overview
+## 项目定位
 
-This repository is moving toward a Node.js/TypeScript AI agent orchestration platform.
+`program_workflow` 目前的核心实现集中在 `langgraph_codegen/`。这里复用了原 AgentSmith 的前后端，作为一个 LangGraph 代码生成器使用：前端负责画布编辑、LLM/Tools 管理和 Sandbox，后端负责 Flow CRUD、代码生成、注册管理和聊天接口。
 
-Current focus:
+## 当前技术栈
 
-- LangGraph JS as the workflow runtime
-- TypeScript backend as the primary server
-- Frontend flow editor and playground UI
-- Registry-backed tools and LLMs
+- 前端：React + Vite + React Flow + Monaco
+- 后端：Python + FastAPI + SQLAlchemy + LangGraph
+- 默认后端地址：`http://127.0.0.1:8000`
+- 前端默认端口：`http://127.0.0.1:5173`
 
-## Current Status
+## 主要能力
 
-- `npm run backend:dev` starts the minimal TypeScript backend
-- `npm run studio` starts the same backend entrypoint
-- `npm run frontend:dev` starts the Vite frontend
-- `npm run build` succeeds
-- Backend now supports:
-  - `health`
-  - flows CRUD
-  - TypeScript code generation from graph state
-  - `run` / `test` with structured execution traces
-  - tools CRUD and code preview
-  - remote/local LLM registry endpoints
-  - chatbot chat and chat/stream endpoints
-- Frontend base URL handling is centralized through `frontend/src/utils/serverUrl.ts`
-- Flow canvas supports node and edge deletion through the left-top selection card
-- Remaining cleanup is mostly legacy API/helper consistency and page-level polish
+- Flow 画布编辑、state schema、保存/加载、节点/边删除
+- 从当前 graph 生成 Python LangGraph scaffold
+- 本地/远程 LLM 注册、校验和模型列表
+- Tool CRUD、代码预览和默认 prompt
+- Chatbot sandbox 的流式对话
 
-## Quick Start
-
-```bash
-npm install
-npm run backend:dev
-npm run frontend:dev
-```
-
-## Repository Architecture
-
-1. Frontend provides visual flow editing, tool management, LLM management, and playground pages.
-2. Backend provides flow persistence, execution, code generation, tool registry, LLM registry, and chatbot APIs.
-3. LangGraph JS is the runtime target for generated workflows.
-
-## Directory Structure
+## 目录
 
 ```text
 .
-|- frontend/                 Frontend app source and Vite entry
-|- backend/                  TypeScript backend implementation
-|- .langgraph_api/           Local LangGraph API state artifacts
-|- doc/                      Project documentation and API contracts
-|- package.json              Root scripts and merged frontend dependencies
-|- tailwind.config.cjs       Root Tailwind config for frontend
-|- postcss.config.cjs        Root PostCSS config for frontend
-`- readme.md                 This document
+|- langgraph_codegen/
+|  |- backend/
+|  |- frontend/
+|  |- package.json
+|  `- README.md
+|- doc/
+|  |- backend_structure.md
+|  |- frontend_structure.md
+|  `- typescript-langgraph-backend-reference.md
+`- readme.md
 ```
 
-## Backend Interfaces Required By Frontend
+## 启动
 
-See [doc/frontend-backend-api.md](doc/frontend-backend-api.md).
+后端：
 
-## Important Integration Notes
+```bash
+cd langgraph_codegen/backend
+python main.py
+```
 
-- Most active frontend callers now use `getApiBaseUrl()` / `getServerUrl()`
-- A few legacy helpers still exist and should be cleaned up later
-- `run` / `test` are simulation-first and return structured execution data
-- `POST /api/flows/generate/code` now emits TypeScript LangGraph code
+前端：
 
-## Suggested Next Steps
+```bash
+cd langgraph_codegen
+npm install
+npm run frontend:dev
+```
 
-1. Finish removing legacy API helpers and unify the remaining URL conventions.
-2. Replace simulated flow execution with real LangGraph JS execution.
-3. Tighten tool and LLM registry behavior around the active UI flows.
+## 文档
+
+- `doc/backend_structure.md`
+- `doc/frontend_structure.md`
+- `doc/typescript-langgraph-backend-reference.md`

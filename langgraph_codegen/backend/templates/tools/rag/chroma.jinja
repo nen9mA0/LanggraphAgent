@@ -1,0 +1,38 @@
+from langchain_chroma import Chroma
+{% if vector_store_url is defined %}
+from chromadb.config import Settings
+import chromadb
+{% endif %}
+
+
+def {{ name }}(query: str, threshold: int = 0.5, k: int = 5) -> List[str]:
+    """Retrieve relevant documents from the Chromadb vector store based on the query."""
+    try:
+
+        {% if vector_store_url is defined %}
+        client = chromadb.HttpClient(host="{{ vector_store_url }}")
+        {% endif %}
+        vectorstore = Chroma(
+            {% if vector_store_url is defined %}
+            client=client,
+            {% else %}
+            persist_directory="{{ vector_store_path }}",
+            {% endif %}
+            embedding_function=embeddings_model,
+            collection_name="{{ index_name }}"
+        )
+
+        retriever = vectorstore.as_retriever(
+            search_type="similarity",
+            search_kwargs={
+                {% if similarity_threshold is defined %}
+                "score_threshold": {{ similarity_threshold }}
+                {% endif %}
+            },
+            k={{ top_k }}
+        )
+
+        results = retriever.get_relevant_documents(query)
+        return [doc.page_content for doc in results] if results else []
+    except Exception as e:
+        return [f"Document Retrieval failed with error message: {e}"]

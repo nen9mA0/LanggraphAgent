@@ -1,21 +1,19 @@
-# TypeScript LangGraph Backend Reference
+# LangGraph Backend Reference
 
 ## Purpose
 
-This document tracks the Node.js/TypeScript backend direction for the current repo.
+This document records the current Python FastAPI backend used by `langgraph_codegen`.
 
-It is both a target architecture note and a status reference for what is already implemented.
+## Current implementation status
 
-## Current Implementation Status
+- Backend entrypoint is `langgraph_codegen/backend/main.py`
+- Flow CRUD, code generation, tools, LLM registry, and chatbot routes are implemented
+- `POST /api/flows/generate/code` returns Python LangGraph scaffold
+- Flow execution is still simulation-first in `run` / `test`
+- `start` / `end` map to `START` / `END` in the generated template
+- Tool and LLM definitions remain registry-backed in the database
 
-- Minimal TypeScript backend is running from `backend/src/main.ts`
-- Health, flows CRUD, code generation, run/test, tools, LLM registry, and chatbot routes are implemented
-- Flow execution is simulation-first and returns structured trace data
-- Generated flow code is TypeScript LangGraph code
-- Visual `start` / `end` nodes map to `START` / `END` in generated code
-- Tool and LLM data are still registry-backed and not embedded into graph JSON
-
-## Minimum HTTP Surface
+## Minimum HTTP surface
 
 ### Health
 
@@ -71,33 +69,31 @@ It is both a target architecture note and a status reference for what is already
 - `POST /api/playground/chatbot/chat`
 - `POST /api/playground/chatbot/chat/stream`
 
-## Generated Code Shape
+## Generated code shape
 
-`POST /api/flows/generate/code` currently returns a TypeScript LangGraph scaffold using:
+`POST /api/flows/generate/code` currently returns a Python LangGraph scaffold using:
 
-- `Annotation`
 - `StateGraph`
 - `START`
 - `END`
+- node function stubs
+- imported LLM and tool blocks
 
-Node stubs are emitted as `async function` blocks and the graph is compiled as TypeScript output.
+## Execution shape
 
-## Execution Shape
-
-`POST /api/flows/:id/run` and `POST /api/flows/:id/test` return:
+`POST /api/flows/:id/run` and `POST /api/flows/:id/test` currently return:
 
 - execution status
 - result wrapper
-- structured execution trace
-- warnings
+- lightweight structured output
 
-## Key Implementation Notes
+## Key implementation notes
 
 - Keep graph persistence as JSON
 - Generate code from templates or structured generators
 - Do not store provider/model details inside the graph as source code
 - Normalize state schema early
 
-## Next Backend Step
+## Next backend step
 
-Move `run` / `test` from simulation-first execution to actual LangGraph JS runtime execution.
+Move `run` / `test` from simulation-first execution to actual LangGraph runtime execution.

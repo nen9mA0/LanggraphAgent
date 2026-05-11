@@ -1,0 +1,4 @@
+from langchain_anthropic import ChatAnthropic
+
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
+llm = ChatAnthropic(api_key=ANTHROPIC_API_KEY, model="{{ model_name }}")

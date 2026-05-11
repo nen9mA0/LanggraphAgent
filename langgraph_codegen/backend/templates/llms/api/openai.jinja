@@ -1,0 +1,4 @@
+from langchain_openai import ChatOpenAI
+
+API_KEY = os.getenv("OPENAI_API_KEY")
+llm = ChatOpenAI(api_key=API_KEY, model="{{ model_name }}")

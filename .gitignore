@@ -21,4 +21,5 @@ backend/data
 
 .vscode/**
 node_modules/**
+langgraph_codegen/node_modules/**
 ref/**

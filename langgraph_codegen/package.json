@@ -1,0 +1,51 @@
+{
+  "name": "program_workflow",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "frontend:dev": "vite --config frontend/vite.config.ts",
+    "build": "vite build --config frontend/vite.config.ts",
+    "preview": "vite preview --config frontend/vite.config.ts",
+    "studio": "sucrase-node backend/src/main.ts"
+  },
+  "dependencies": {
+    "@emotion/react": "^11.14.0",
+    "@emotion/styled": "^11.14.0",
+    "@headlessui/react": "^2.2.4",
+    "@heroicons/react": "^2.2.0",
+    "@langchain/core": "^1.1.36",
+    "@langchain/langgraph": "^1.2.5",
+    "@monaco-editor/react": "^4.7.0",
+    "@mui/icons-material": "^7.2.0",
+    "@mui/material": "^7.1.2",
+    "@tanstack/react-query": "^5.83.0",
+    "axios": "^1.10.0",
+    "framer-motion": "^12.18.1",
+    "monaco-editor": "^0.52.2",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "react-dropzone": "^14.3.8",
+    "react-hot-toast": "^2.5.2",
+    "react-icons": "^5.5.0",
+    "react-router-dom": "^6.30.1",
+    "reactflow": "^11.11.4",
+    "zustand": "^5.0.5"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.25.0",
+    "@tailwindcss/typography": "^0.5.16",
+    "@types/react": "^19.1.8",
+    "@types/react-dom": "^19.1.6",
+    "@vitejs/plugin-react": "^4.4.1",
+    "autoprefixer": "^10.4.19",
+    "eslint": "^9.25.0",
+    "eslint-plugin-react-hooks": "^5.2.0",
+    "eslint-plugin-react-refresh": "^0.4.19",
+    "globals": "^16.0.0",
+    "postcss": "^8.4.38",
+    "tailwindcss": "^3.4.1",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.30.1",
+    "vite": "^6.3.5"
+  }
+}
