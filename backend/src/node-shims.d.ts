@@ -13,14 +13,6 @@ declare const Buffer: {
   isBuffer(value: unknown): value is { toString(encoding?: string): string };
 };
 
-declare var console: {
-  log(...args: unknown[]): void;
-};
-
-declare var URL: {
-  new (url: string, base?: string): { pathname: string };
-};
-
 declare module 'node:http' {
   export interface IncomingMessage {
     method?: string;

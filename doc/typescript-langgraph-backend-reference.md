@@ -2,20 +2,18 @@
 
 ## Purpose
 
-This document defines a minimal TypeScript backend for a visual LangGraph-based agent builder.
+This document tracks the Node.js/TypeScript backend direction for the current repo.
 
-Target capabilities:
+It is both a target architecture note and a status reference for what is already implemented.
 
-- visual graph orchestration
-- custom state definition
-- code export
-- enough registry support for tools and LLMs to make exported graphs usable
+## Current Implementation Status
 
-This is a migration reference, not a product spec.
-
-Companion structure map:
-
-- [`ref/agent-smith/backend-structure.md`](../ref/agent-smith/backend-structure.md)
+- Minimal TypeScript backend is running from `backend/src/main.ts`
+- Health, flows CRUD, code generation, run/test, tools, LLM registry, and chatbot routes are implemented
+- Flow execution is simulation-first and returns structured trace data
+- Generated flow code is TypeScript LangGraph code
+- Visual `start` / `end` nodes map to `START` / `END` in generated code
+- Tool and LLM data are still registry-backed and not embedded into graph JSON
 
 ## Minimum HTTP Surface
 
@@ -23,10 +21,6 @@ Companion structure map:
 
 - `HEAD /api/health`
 - `GET /api/health`
-
-Purpose:
-
-- backend readiness check
 
 ### Flows
 
@@ -39,13 +33,6 @@ Purpose:
 - `POST /api/flows/:id/run`
 - `POST /api/flows/:id/test`
 
-Purpose:
-
-- persist visual graphs
-- load existing drafts
-- export runnable code
-- execute or dry-run a saved graph
-
 ### Tools
 
 - `GET /api/tools`
@@ -55,12 +42,6 @@ Purpose:
 - `DELETE /api/tools/:id`
 - `POST /api/tools/preview_code`
 - `GET /api/tools/:name/default_agent_prompts`
-
-Purpose:
-
-- store reusable tool definitions
-- preview generated tool code
-- provide default prompts for node binding
 
 ### LLM Registry
 
@@ -85,125 +66,38 @@ Purpose:
 - `GET /api/llms/local/provider/:provider/models`
 - `GET /api/llms/local/:provider/recommended-path`
 
-Purpose:
+### Playground
 
-- keep model/provider configuration out of graph JSON
-- support both remote and local backends
-- support parameter discovery for UI forms
+- `POST /api/playground/chatbot/chat`
+- `POST /api/playground/chatbot/chat/stream`
 
-## Internal TypeScript Interfaces
+## Generated Code Shape
 
-### Flow DTO
+`POST /api/flows/generate/code` currently returns a TypeScript LangGraph scaffold using:
 
-```ts
-type FlowGraph = {
-  nodes: GraphNode[];
-  edges: GraphEdge[];
-};
+- `Annotation`
+- `StateGraph`
+- `START`
+- `END`
 
-type FlowState = {
-  fields: StateField[];
-};
+Node stubs are emitted as `async function` blocks and the graph is compiled as TypeScript output.
 
-type FlowPayload = {
-  name: string;
-  description?: string;
-  graph: FlowGraph;
-  state: FlowState;
-};
-```
+## Execution Shape
 
-### Graph Compiler
+`POST /api/flows/:id/run` and `POST /api/flows/:id/test` return:
 
-```ts
-interface FlowCompiler {
-  generateCode(flow: FlowPayload): Promise<string>;
-  compile(flow: FlowPayload): Promise<CompiledGraph>;
-  sanitizeNodeName(name: string): string;
-}
-```
+- execution status
+- result wrapper
+- structured execution trace
+- warnings
 
-### Flow Executor
+## Key Implementation Notes
 
-```ts
-interface FlowExecutor {
-  run(flowId: string, input?: Record<string, unknown>): Promise<unknown>;
-  test(flowId: string, input?: Record<string, unknown>): Promise<unknown>;
-}
-```
+- Keep graph persistence as JSON
+- Generate code from templates or structured generators
+- Do not store provider/model details inside the graph as source code
+- Normalize state schema early
 
-### Tool Adapter
+## Next Backend Step
 
-```ts
-interface ToolAdapter {
-  toCode(): string;
-  toNode(): Record<string, unknown>;
-  defaultAgentPrompts(): { system_prompt: string; user_prompt: string };
-}
-```
-
-### LLM Adapter
-
-```ts
-interface LLMAdapter {
-  listModels(): Promise<string[]>;
-  listEmbeddingModels(): Promise<string[]>;
-  validateKey(apiKey?: string): Promise<boolean>;
-  getTunableParameters(model?: string): Record<string, unknown>;
-  toCode(model: string): string;
-}
-```
-
-### Persistence Layer
-
-```ts
-interface FlowRepository {
-  create(flow: FlowPayload): Promise<FlowRecord>;
-  update(id: string, flow: FlowPayload): Promise<FlowRecord | null>;
-  findById(id: string): Promise<FlowRecord | null>;
-  list(limit?: number): Promise<FlowRecord[]>;
-  delete(id: string): Promise<FlowRecord | null>;
-}
-```
-
-## LangGraph JS Integration Notes
-
-- use `StateGraph` as the runtime compiler target
-- map visual `start` and `end` nodes to `START` and `END`
-- generate node function names from labels with sanitization
-- keep graph persistence as JSON, not as generated source
-- render code from templates or structured generators, not by mutating stored graph state
-- treat state fields as schema metadata, then derive the LangGraph state type from them
-
-## Key Implementation Risks
-
-- node labels may not be valid TypeScript identifiers
-- graph JSON and generated code can drift if codegen mutates stored data
-- state schema can contain unsupported types unless normalized early
-- secrets must not be stored in plaintext
-- provider/model discovery is backend-specific and may fail offline
-- streaming and non-streaming responses should share one response contract
-- the frontend currently assumes multiple base URL styles, so the backend should not hardcode a single origin
-
-## Recommended Minimum Build Order
-
-1. health
-2. flow persistence
-3. state schema validation
-4. code generation
-5. tool registry
-6. LLM registry
-7. run/test execution
-
-## Reference Mapping From AgentSmith
-
-The Python reference implements the same split:
-
-- `api/flows.py`
-- `api/tools.py`
-- `api/llms.py`
-- `services/flows/codegen.py`
-- `services/tools/*`
-- `services/llms/*`
-
-This document is the TypeScript adaptation target for that architecture.
+Move `run` / `test` from simulation-first execution to actual LangGraph JS runtime execution.
