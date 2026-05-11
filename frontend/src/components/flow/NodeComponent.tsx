@@ -1,7 +1,7 @@
 import { memo } from 'react';
 import { type Node, type NodeProps } from 'reactflow';
 import { Handle, Position } from 'reactflow';
-import type { NodeData, NodeType } from '../../store/useFlowStore';
+import { type NodeData, type NodeType } from '../../store/useFlowStore';
 
 type CustomNode = Node<NodeData> & {
   type: NodeType;
@@ -18,18 +18,18 @@ const NODE_COLORS = {
 const StartEndNode = ({ 
   isStart, 
   selected, 
-  isConnectable 
+  isConnectable
 }: { 
   isStart: boolean; 
   selected: boolean; 
-  isConnectable: boolean 
+  isConnectable: boolean;
 }) => {
   const colors = isStart 
     ? { bg: 'bg-emerald-500', border: 'border-emerald-500' }
     : { bg: 'bg-rose-500', border: 'border-rose-500' };
   
   return (
-    <div className={`relative w-40 h-16 ${selected ? 'scale-105' : 'scale-100'}`}>
+    <div className={`group relative w-40 h-16 ${selected ? 'scale-105' : 'scale-100'}`}>
       {!isStart && (
         <Handle
           type="target"
@@ -168,12 +168,18 @@ const NodeComponent = memo(({
   
   // Special case for start/end nodes
   if (data.type === 'start' || data.type === 'end') {
-    return <StartEndNode isStart={data.type === 'start'} selected={selected} isConnectable={isConnectable} />;
+    return (
+      <StartEndNode
+        isStart={data.type === 'start'}
+        selected={selected}
+        isConnectable={isConnectable}
+      />
+    );
   }
   
   return (
     <div 
-      className="relative w-56"
+      className="group relative w-56"
       style={{
         transform: selected ? 'scale(105%)' : 'none',
         transition: dragging ? 'none' : 'transform 100ms ease-out',

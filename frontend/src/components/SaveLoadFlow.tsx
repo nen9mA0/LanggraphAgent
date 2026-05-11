@@ -1,21 +1,24 @@
 import React, { useState, useEffect } from 'react';
-import { 
-  Button, 
-  Dialog, 
-  DialogTitle, 
-  DialogContent, 
-  DialogActions, 
+import {
+  Button,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogActions,
   TextField, 
   List, 
   ListItem, 
   ListItemText, 
   ListItemSecondaryAction, 
   IconButton, 
-  Box, 
-  ListItemButton, 
+  Box,
+  ListItemButton,
   Typography,
   Snackbar,
   Alert,
+  Paper,
+  Chip,
+  Divider,
   type AlertColor
 } from '@mui/material';
 import { Delete as DeleteIcon, Save as SaveIcon, FolderOpen as FolderOpenIcon, PlayArrow as PlayIcon, BugReport as TestIcon } from '@mui/icons-material';
@@ -26,6 +29,32 @@ interface SaveLoadFlowProps {
   onLoad: (graph: any) => void;
 }
 
+interface ExecutionStep {
+  index: number;
+  node_id: string;
+  label: string;
+  type: string;
+  next_node_id: string | null;
+  output?: {
+    kind?: string;
+    message?: string;
+    selected_next?: string | null;
+    tool?: { name?: string } | null;
+    llm?: { alias?: string; model?: string } | null;
+  };
+}
+
+interface ExecutionResult {
+  mode?: 'run' | 'test';
+  completed?: boolean;
+  started_from?: string | null;
+  ended_at?: string | null;
+  visited_node_ids?: string[];
+  steps?: ExecutionStep[];
+  final_state?: Record<string, unknown>;
+  warnings?: string[];
+}
+
 const SaveLoadFlow: React.FC<SaveLoadFlowProps> = ({ serializedGraph, onLoad }) => {
   const [open, setOpen] = useState(false);
   const [flows, setFlows] = useState<Flow[]>([]);
@@ -34,6 +63,8 @@ const SaveLoadFlow: React.FC<SaveLoadFlowProps> = ({ serializedGraph, onLoad }) 
   const [flowDescription, setFlowDescription] = useState('');
   const [selectedFlow, setSelectedFlow] = useState<Flow | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [executionResult, setExecutionResult] = useState<ExecutionResult | null>(null);
+  const [executionLabel, setExecutionLabel] = useState<string>('');
   const [snackbar, setSnackbar] = useState<{
     open: boolean;
     message: string;
@@ -72,12 +103,16 @@ const SaveLoadFlow: React.FC<SaveLoadFlowProps> = ({ serializedGraph, onLoad }) 
   const handleOpenLoad = () => {
     setMode('load');
     setSelectedFlow(null);
+    setExecutionResult(null);
+    setExecutionLabel('');
     setOpen(true);
   };
 
   const handleClose = () => {
     setOpen(false);
     setSelectedFlow(null);
+    setExecutionResult(null);
+    setExecutionLabel('');
   };
 
   const handleSnackbarClose = () => {
@@ -210,6 +245,8 @@ const SaveLoadFlow: React.FC<SaveLoadFlowProps> = ({ serializedGraph, onLoad }) 
     try {
       setIsLoading(true);
       const result = await runFlow(selectedFlow.id);
+      setExecutionLabel('Run');
+      setExecutionResult(result?.result?.execution || null);
       setSnackbar({
         open: true,
         message: `Flow "${selectedFlow.name}" executed successfully!`,
@@ -234,6 +271,8 @@ const SaveLoadFlow: React.FC<SaveLoadFlowProps> = ({ serializedGraph, onLoad }) 
     try {
       setIsLoading(true);
       const result = await testFlow(selectedFlow.id);
+      setExecutionLabel('Test');
+      setExecutionResult(result?.result?.execution || null);
       setSnackbar({
         open: true,
         message: `Flow "${selectedFlow.name}" test completed successfully!`,
@@ -255,6 +294,8 @@ const SaveLoadFlow: React.FC<SaveLoadFlowProps> = ({ serializedGraph, onLoad }) 
   const handleSelectFlow = (flow: Flow) => {
     if (mode === 'load') {
       setSelectedFlow(flow);
+      setExecutionResult(null);
+      setExecutionLabel('');
     } else {
       // In save mode, select flow to update
       setSelectedFlow(flow);
@@ -266,6 +307,7 @@ const SaveLoadFlow: React.FC<SaveLoadFlowProps> = ({ serializedGraph, onLoad }) 
   const dialogTitle = mode === 'save' ? 'Save Flow' : 'Load Flow';
   const dialogActionText = mode === 'save' ? 'Save' : 'Load';
   const isActionDisabled = mode === 'save' ? !flowName.trim() : !selectedFlow;
+  const steps = executionResult?.steps || [];
 
   return (
     <>
@@ -555,6 +597,75 @@ const SaveLoadFlow: React.FC<SaveLoadFlowProps> = ({ serializedGraph, onLoad }) 
               ))
             )}
           </List>
+          {mode === 'load' && selectedFlow && executionResult && (
+            <Paper
+              variant="outlined"
+              sx={{
+                mt: 2,
+                p: 2,
+                bgcolor: 'rgba(17, 24, 39, 0.65)',
+                borderColor: 'rgba(251, 191, 36, 0.18)',
+                color: 'white',
+              }}
+            >
+              <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 1, mb: 1 }}>
+                <Typography variant="subtitle2" sx={{ color: 'white', fontWeight: 600 }}>
+                  {executionLabel || 'Execution'} Result
+                </Typography>
+                <Chip
+                  size="small"
+                  label={executionResult.completed ? 'Completed' : 'Partial'}
+                  color={executionResult.completed ? 'success' : 'warning'}
+                  variant="outlined"
+                />
+              </Box>
+              <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1, mb: 1.5 }}>
+                <Chip size="small" label={`Start: ${executionResult.started_from || 'n/a'}`} />
+                <Chip size="small" label={`End: ${executionResult.ended_at || 'n/a'}`} />
+                <Chip size="small" label={`Steps: ${steps.length}`} />
+              </Box>
+              {executionResult.warnings?.length ? (
+                <Box sx={{ mb: 1.5 }}>
+                  {executionResult.warnings.map((warning, index) => (
+                    <Typography key={index} variant="caption" sx={{ display: 'block', color: '#fbbf24' }}>
+                      {warning}
+                    </Typography>
+                  ))}
+                </Box>
+              ) : null}
+              <Divider sx={{ borderColor: 'rgba(255,255,255,0.08)', mb: 1.5 }} />
+              <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1, maxHeight: 220, overflow: 'auto' }}>
+                {steps.map((step) => (
+                  <Box
+                    key={`${step.index}-${step.node_id}`}
+                    sx={{
+                      p: 1,
+                      borderRadius: 1,
+                      bgcolor: 'rgba(255,255,255,0.03)',
+                      border: '1px solid rgba(255,255,255,0.06)',
+                    }}
+                  >
+                    <Typography variant="body2" sx={{ color: 'white', fontWeight: 500 }}>
+                      {step.index + 1}. {step.label} <span style={{ color: 'rgba(255,255,255,0.55)' }}>({step.type})</span>
+                    </Typography>
+                    <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.7)', display: 'block' }}>
+                      Next: {step.next_node_id || 'n/a'}
+                    </Typography>
+                    {step.output?.message ? (
+                      <Typography variant="caption" sx={{ color: '#d1d5db', display: 'block' }}>
+                        {step.output.message}
+                      </Typography>
+                    ) : null}
+                  </Box>
+                ))}
+                {!steps.length && (
+                  <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.55)' }}>
+                    No execution steps returned.
+                  </Typography>
+                )}
+              </Box>
+            </Paper>
+          )}
         </DialogContent>
         <DialogActions>
           <Button 

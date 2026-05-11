@@ -3,6 +3,7 @@ import { FiCpu, FiPlus, FiChevronDown, FiTool, FiChevronRight, FiInfo, FiTermina
 import type { CustomNode } from '../../types';
 import { Label, ListboxOption, Listbox, ListboxButton, ListboxOptions, Transition } from '@headlessui/react'
 import { ChevronUpDownIcon } from '@heroicons/react/20/solid'
+import { getServerUrl } from '../../utils/serverUrl';
 
 
 interface RemoteLLM {
@@ -95,7 +96,7 @@ const NodeSidebar = ({ node, onUpdate }: NodeSidebarProps) => {
     const fetchTools = async () => {
       setIsLoadingTools(true);
       try {
-        const response = await fetch('http://localhost:8000/api/tools');
+        const response = await fetch(`${getServerUrl()}/api/tools`);
         if (!response.ok) {
           throw new Error('Failed to fetch tools');
         }
@@ -120,8 +121,8 @@ const NodeSidebar = ({ node, onUpdate }: NodeSidebarProps) => {
       try {
         setIsLoadingProviders(true);
         const endpoint = llmType === 'local' 
-          ? 'http://localhost:8000/api/llms/local' 
-          : 'http://localhost:8000/api/llms/remote';
+          ? `${getServerUrl()}/api/llms/local` 
+          : `${getServerUrl()}/api/llms/remote`;
         
         const response = await fetch(endpoint);
         if (!response.ok) {
@@ -178,8 +179,8 @@ const NodeSidebar = ({ node, onUpdate }: NodeSidebarProps) => {
       try {
         setIsLoadingModels(true);
         const endpoint = llmType === 'remote' 
-          ? `http://localhost:8000/api/llms/remote/${encodeURIComponent(selectedProvider.alias)}/models`
-          : `http://localhost:8000/api/llms/local/${encodeURIComponent(selectedProvider.alias)}/models`;
+          ? `${getServerUrl()}/api/llms/remote/${encodeURIComponent(selectedProvider.alias)}/models`
+          : `${getServerUrl()}/api/llms/local/${encodeURIComponent(selectedProvider.alias)}/models`;
         
         const response = await fetch(endpoint, {
           method: 'GET',
@@ -505,7 +506,7 @@ const NodeSidebar = ({ node, onUpdate }: NodeSidebarProps) => {
     
     setIsLoadingPrompts(true);
     try {
-      const response = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:8000'}/api/tools/${encodeURIComponent(toolName)}/default_agent_prompts`);
+      const response = await fetch(`${getServerUrl()}/api/tools/${encodeURIComponent(toolName)}/default_agent_prompts`);
       if (!response.ok) {
         throw new Error('Failed to fetch default prompts');
       }

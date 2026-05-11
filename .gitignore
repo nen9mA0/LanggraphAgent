@@ -17,6 +17,7 @@ package-lock.json
 dist
 frontend/dist
 frontend/dist-ssr
+backend/data
 
 .vscode/**
 node_modules/**

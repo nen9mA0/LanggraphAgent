@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { FiRefreshCw, FiEdit2, FiTrash2, FiCpu, FiServer, FiAlertCircle, FiKey, FiArrowLeft } from 'react-icons/fi';
 import { llmService, type LLM, type APIProvider } from '../services/llmService';
+import { getServerUrl } from '../utils/serverUrl';
 
 type LLMType = 'api' | 'local';
 
@@ -196,7 +197,7 @@ const LLMsPage = () => {
     setError(null);
     
     try {
-      const response = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:8000'}/api/llms/remote/validate-key`, {
+      const response = await fetch(`${getServerUrl()}/api/llms/remote/validate-key`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -239,7 +240,7 @@ const LLMsPage = () => {
     if (llm.type === 'api') {
       try {
         // Validate API key for remote LLMs using the alias endpoint
-        const response = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:8000'}/api/llms/remote/${encodeURIComponent(llm.alias)}/validate-key`);
+        const response = await fetch(`${getServerUrl()}/api/llms/remote/${encodeURIComponent(llm.alias)}/validate-key`);
         const data = await response.json();
         
         setValidationStatus({
@@ -251,12 +252,12 @@ const LLMsPage = () => {
         if (data.valid) {
           try {
             setIsLoadingDetails(true);
-            const modelsResponse = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:8000'}/api/llms/remote/${encodeURIComponent(llm.alias)}/models`);
+            const modelsResponse = await fetch(`${getServerUrl()}/api/llms/remote/${encodeURIComponent(llm.alias)}/models`);
             const modelsData = await modelsResponse.json();
             setAvailableModels(modelsData.models || []);
             
             // Fetch available embeddings models
-            const embeddingsResponse = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:8000'}/api/llms/remote/${encodeURIComponent(llm.alias)}/embeddings_models`);
+            const embeddingsResponse = await fetch(`${getServerUrl()}/api/llms/remote/${encodeURIComponent(llm.alias)}/embeddings_models`);
             const embeddingsData = await embeddingsResponse.json();
             setAvailableEmbeddings(embeddingsData.embeddings_models || []);
           } catch (err) {
@@ -277,12 +278,12 @@ const LLMsPage = () => {
     if (llm.type === 'local') {
       try {
         // Fetch available models
-        const modelsResponse = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:8000'}/api/llms/local/${encodeURIComponent(llm.alias)}/models`);
+        const modelsResponse = await fetch(`${getServerUrl()}/api/llms/local/${encodeURIComponent(llm.alias)}/models`);
         const modelsData = await modelsResponse.json();
         setAvailableModels(modelsData.models || []);
         
         // Fetch available embeddings models
-        const embeddingsResponse = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:8000'}/api/llms/local/${encodeURIComponent(llm.alias)}/embeddings_models`);
+        const embeddingsResponse = await fetch(`${getServerUrl()}/api/llms/local/${encodeURIComponent(llm.alias)}/embeddings_models`);
         const embeddingsData = await embeddingsResponse.json();
         setAvailableEmbeddings(embeddingsData.embeddings_models || []);
       } catch (err) {
@@ -803,7 +804,7 @@ const LLMsPage = () => {
                             onClick={async () => {
                               try {
                                 const response = await fetch(
-                                  `${import.meta.env.VITE_API_URL || 'http://localhost:8000'}/api/llms/local/provider/lm-studio/models`
+                                  `${getServerUrl()}/api/llms/local/provider/lm-studio/models`
                                 );
                                 if (response.ok) {
                                   const data = await response.json();
@@ -865,7 +866,7 @@ const LLMsPage = () => {
                             onClick={async () => {
                               try {
                                 const response = await fetch(
-                                  `${import.meta.env.VITE_API_URL || 'http://localhost:8000'}/api/llms/local/llama-cpp/recommended-path`
+                                  `${getServerUrl()}/api/llms/local/llama-cpp/recommended-path`
                                 );
                                 const data = await response.json();
                                 if (data.path) {

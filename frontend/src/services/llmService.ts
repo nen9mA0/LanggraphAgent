@@ -1,6 +1,7 @@
 import axios from 'axios';
+import { getApiBaseUrl } from '../utils/serverUrl';
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api';
+const API_BASE_URL = getApiBaseUrl();
 
 export type APIProvider = 'openai' | 'anthropic' | 'huggingface' | 'llama-cpp' | 'lm-studio';
 

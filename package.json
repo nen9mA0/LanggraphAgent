@@ -3,10 +3,11 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite --config frontend/vite.config.ts",
+    "frontend:dev": "vite --config frontend/vite.config.ts",
     "build": "vite build --config frontend/vite.config.ts",
     "preview": "vite preview --config frontend/vite.config.ts",
-    "studio": "langgraphjs dev"
+    "studio": "sucrase-node backend/src/main.ts",
+    "backend:dev": "sucrase-node backend/src/main.ts"
   },
   "dependencies": {
     "@emotion/react": "^11.14.0",

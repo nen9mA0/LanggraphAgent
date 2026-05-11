@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, lazy, Suspense } from 'react';
 import useFlowStore from '../../store/useFlowStore';
 import { FiCode } from 'react-icons/fi';
+import { getApiBaseUrl } from '../../utils/serverUrl';
 
 // Lazy load the Monaco Editor
 const MonacoEditor = lazy(() => import('@monaco-editor/react'));
@@ -77,7 +78,7 @@ const CodeSidebar = ({ flowId }: CodeSidebarProps) => {
       
       console.log('Sending flow data to backend:', JSON.stringify(flowData, null, 2));
       
-      const response = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:8000'}/api/flows/generate/code`, {
+      const response = await fetch(`${getApiBaseUrl()}/flows/generate/code`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -209,7 +210,7 @@ const CodeSidebar = ({ flowId }: CodeSidebarProps) => {
             <Suspense fallback={<EditorLoading />}>
               <MonacoEditor
                 height="100%"
-                defaultLanguage="python"
+                defaultLanguage="typescript"
                 value={generatedCode}
                 theme="vs-dark"
                 options={{

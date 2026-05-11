@@ -329,6 +329,8 @@ const FlowCanvasWithSidebar = ({ flowId }: FlowCanvasWithSidebarProps) => {
       const updatedNode = nodes.find(n => n.id === selectedNode.id);
       if (updatedNode) {
         setSelectedNode(updatedNode as CustomNode);
+      } else {
+        setSelectedNode(null);
       }
     }
   }, [nodes, selectedNode]);

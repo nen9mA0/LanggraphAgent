@@ -1,6 +1,7 @@
 import { useServer } from '../contexts/ServerContext';
 import { useState, useEffect } from 'react';
 import { FiSave, FiServer, FiRefreshCw } from 'react-icons/fi';
+import { DEFAULT_SERVER_URL } from '../utils/serverUrl';
 
 const SettingsPage = () => {
   const { serverUrl, setServerUrl, serverStatus, checkServerStatus } = useServer();
@@ -24,7 +25,7 @@ const SettingsPage = () => {
       setTimeout(() => setStatusMessage(''), 3000);
     } catch (e) {
       setIsValidUrl(false);
-      setStatusMessage('Please enter a valid URL (e.g., http://localhost:8000)');
+      setStatusMessage(`Please enter a valid URL (e.g., ${DEFAULT_SERVER_URL})`);
     } finally {
       setIsSaving(false);
     }
@@ -84,7 +85,7 @@ const SettingsPage = () => {
                 className={`flex-1 bg-gray-700 border ${
                   isValidUrl ? 'border-gray-600' : 'border-red-500'
                 } rounded-md px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-blue-500`}
-                placeholder="http://localhost:8000"
+                placeholder={DEFAULT_SERVER_URL}
               />
               <button
                 onClick={handleSave}

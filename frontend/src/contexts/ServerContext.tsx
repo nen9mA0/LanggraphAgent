@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
+import { DEFAULT_SERVER_URL } from '../utils/serverUrl';
 
 interface ServerContextType {
   serverUrl: string;
@@ -19,7 +20,7 @@ export const useServer = () => {
 
 export const ServerProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [serverUrl, setServerUrl] = useState<string>(
-    localStorage.getItem('serverUrl') || 'http://localhost:8000'
+    localStorage.getItem('serverUrl') || DEFAULT_SERVER_URL
   );
   const [serverStatus, setServerStatus] = useState<'online' | 'offline' | 'checking'>('checking');
 

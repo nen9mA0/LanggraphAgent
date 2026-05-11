@@ -6,11 +6,13 @@ import ReactFlow, {
   Background,
   Controls,
   type Node,
+  type Edge,
   type MarkerType,
   type Connection,
   ConnectionLineType
 } from 'reactflow';
 import 'reactflow/dist/style.css';
+import { FiTrash2 } from 'react-icons/fi';
 import useFlowStore, { type NodeType } from '../store/useFlowStore';
 import { nodeTypes } from './flow/nodeTypes';
 import type { CustomNode } from './flow/NodeComponent';
@@ -56,6 +58,8 @@ export const FlowCanvas: React.FC<FlowCanvasProps> = ({
     onNodesChange, 
     onEdgesChange, 
     addEdge,
+    removeEdge,
+    removeNode,
     addNode,
     setNodes,
     setEdges,
@@ -65,6 +69,7 @@ export const FlowCanvas: React.FC<FlowCanvasProps> = ({
   // State for the modals
   const [isStateModalOpen, setIsStateModalOpen] = useState(false);
   const [isMemoryModalOpen, setIsMemoryModalOpen] = useState(false);
+  const [selectedEdge, setSelectedEdge] = useState<Edge | null>(null);
   const [stateFields, setStateFields] = useState<StateField[]>(flowState || []);
   
   // Initialize state fields when component mounts
@@ -108,6 +113,12 @@ export const FlowCanvas: React.FC<FlowCanvasProps> = ({
       setState(defaultFields);
     }
   }, [setState]);
+
+  useEffect(() => {
+    if (selectedEdge && !edges.some((edge) => edge.id === selectedEdge.id)) {
+      setSelectedEdge(null);
+    }
+  }, [edges, selectedEdge]);
   
   // Log state changes
   useEffect(() => {
@@ -158,12 +169,33 @@ export const FlowCanvas: React.FC<FlowCanvasProps> = ({
   }, [addEdge]);
 
   const handleNodeClick = useCallback((_event: React.MouseEvent, node: Node) => {
+    setSelectedEdge(null);
     onNodeSelect?.(node as CustomNode);
   }, [onNodeSelect]);
 
   const handlePaneClick = useCallback((_event: React.MouseEvent) => {
+    setSelectedEdge(null);
     onNodeSelect?.(null);
   }, [onNodeSelect]);
+
+  const handleEdgeClick = useCallback((_event: React.MouseEvent, edge: Edge) => {
+    setSelectedEdge(edge);
+    onNodeSelect?.(null);
+  }, [onNodeSelect]);
+
+  const handleDeleteSelectedEdge = useCallback(() => {
+    if (!selectedEdge) return;
+    removeEdge(selectedEdge.id);
+    setSelectedEdge(null);
+    onNodeSelect?.(null);
+  }, [onNodeSelect, removeEdge, selectedEdge]);
+
+  const handleDeleteSelectedNode = useCallback(() => {
+    const selectedNode = nodes.find((node) => node.selected);
+    if (!selectedNode) return;
+    removeNode(selectedNode.id);
+    onNodeSelect?.(null);
+  }, [nodes, onNodeSelect, removeNode]);
 
   const createNode = useCallback((type: NodeType, position: { x: number; y: number }): CustomNode => {
     const id = `${type}-${Date.now()}`;
@@ -363,6 +395,39 @@ export const FlowCanvas: React.FC<FlowCanvasProps> = ({
           onLoad={loadFlow} 
         />
       </div>
+
+      {(nodes.some((node) => node.selected) || selectedEdge) && (
+        <div className="absolute top-4 left-4 z-10">
+          <div className="flex items-center gap-3 rounded-lg border border-red-500/30 bg-gray-900/90 px-3 py-2 shadow-lg shadow-black/20 backdrop-blur">
+            <div className="min-w-0">
+              {selectedEdge ? (
+                <>
+                  <div className="text-xs font-medium text-red-300">Selected Edge</div>
+                  <div className="text-[11px] text-gray-400 truncate max-w-[220px]">
+                    {selectedEdge.source} {'->'} {selectedEdge.target}
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="text-xs font-medium text-red-300">Selected Node</div>
+                  <div className="text-[11px] text-gray-400 truncate max-w-[220px]">
+                    {nodes.find((node) => node.selected)?.data.label ?? 'Unnamed node'}
+                  </div>
+                </>
+              )}
+            </div>
+            <button
+              type="button"
+              onClick={selectedEdge ? handleDeleteSelectedEdge : handleDeleteSelectedNode}
+              className="inline-flex items-center gap-1 rounded-md bg-red-600/15 px-2.5 py-1 text-xs font-medium text-red-300 hover:bg-red-600 hover:text-white transition-colors"
+              title={selectedEdge ? 'Delete edge' : 'Delete node'}
+            >
+              <FiTrash2 className="h-3.5 w-3.5" />
+              Delete
+            </button>
+          </div>
+        </div>
+      )}
     </>
   ), [
     memoizedToolbar,
@@ -374,7 +439,11 @@ export const FlowCanvas: React.FC<FlowCanvasProps> = ({
     handleMemorySave,
     stateFields,
     getSerializedGraph,
-    loadFlow
+    loadFlow,
+    nodes,
+    selectedEdge,
+    handleDeleteSelectedEdge,
+    handleDeleteSelectedNode
   ]);
 
   const optimizedNodes = useMemo(() => nodes, [nodes]);
@@ -392,6 +461,7 @@ export const FlowCanvas: React.FC<FlowCanvasProps> = ({
         onEdgesChange={onEdgesChange}
         onConnect={handleConnect}
         onNodeClick={handleNodeClick}
+        onEdgeClick={handleEdgeClick}
         onPaneClick={handlePaneClick}
         {...flowProps}
         {...eventHandlers}
@@ -403,3 +473,4 @@ export const FlowCanvas: React.FC<FlowCanvasProps> = ({
 };
 
 export default FlowCanvas;
+
