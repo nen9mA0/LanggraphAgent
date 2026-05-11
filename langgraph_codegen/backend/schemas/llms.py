@@ -1,6 +1,6 @@
 from enum import Enum
 from typing import Optional, Literal, Dict, Any
-from pydantic import BaseModel, Field, HttpUrl
+from pydantic import BaseModel, Field
 
 
 class LLMType(str, Enum):
@@ -34,7 +34,7 @@ class RemoteLLM(BaseLLM):
         description="API key for the LLM provider.",
         exclude=True
     )
-    base_url: Optional[HttpUrl] = Field(
+    base_url: Optional[str] = Field(
         None,
         description="Base URL for the API. Only needed for self-hosted or custom endpoints."
     )
@@ -50,11 +50,12 @@ class RemoteLLM(BaseLLM):
         }
 
 
-class RemoteLLMUpdate(BaseLLM):
+class RemoteLLMUpdate(BaseModel):
     """Model for updating API-based remote LLMs"""
+    type: Literal[LLMType.API] = LLMType.API
     alias: str
-    api_key: str
-    base_url: Optional[HttpUrl] = None
+    api_key: Optional[str] = None
+    base_url: Optional[str] = None
 
 
 
@@ -62,7 +63,7 @@ class RemoteLLMOut(BaseModel):
     alias: str
     type: Literal[LLMType.API] = LLMType.API
     provider: RemoteProvider
-    base_url: Optional[HttpUrl] = None
+    base_url: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -116,6 +117,7 @@ LLM = RemoteLLM | LocalLLM
 class LLMValidationRequest(BaseModel):
     provider: str  # "openai", "anthropic", etc.
     api_key: str
+    base_url: Optional[str] = None
 
 
 class LLMValidationResponse(BaseModel):

@@ -8,10 +8,10 @@ from crud.llms import get_api_key_by_alias, get_remote_llm_by_alias, get_local_l
 from sqlalchemy.orm import Session
 
 
-REMOTE_PROVIDERS: Dict[str, Callable[[str], object]] = {
-    "anthropic": lambda key: AnthropicAPILLM(api_key=key),
-    "openai": lambda key: OpenAIAPILLM(api_key=key),
-    "huggingface": lambda key: HuggingFaceAPILLM(api_key=key),
+REMOTE_PROVIDERS: Dict[str, Callable[[str, str | None], object]] = {
+    "anthropic": lambda key, base_url=None: AnthropicAPILLM(api_key=key, base_url=base_url),
+    "openai": lambda key, base_url=None: OpenAIAPILLM(api_key=key, base_url=base_url),
+    "huggingface": lambda key, base_url=None: HuggingFaceAPILLM(api_key=key, base_url=base_url),
 }
 
 LOCAL_PROVIDERS: Dict[str, Callable[[str], object]] = {
@@ -29,7 +29,7 @@ def get_llm_client_by_alias(alias: str, db: Session, is_remote: bool):
             if llm.provider not in REMOTE_PROVIDERS:
                 raise ValueError(f"Unknown Remote LLM provider: {llm.provider}")
 
-            return REMOTE_PROVIDERS[llm.provider](api_key)
+            return REMOTE_PROVIDERS[llm.provider](api_key, llm.base_url)
 
         else:
             llm = get_local_llm_by_alias(db, alias=alias)
@@ -45,13 +45,15 @@ def get_llm_client_by_alias(alias: str, db: Session, is_remote: bool):
 
 
 def get_llm_client_by_provider(provider: str, **kwargs):
+    api_key = kwargs.get("api_key")
+    base_url = kwargs.get("base_url")
 
     if provider == "anthropic":
-        return AnthropicAPILLM()
+        return AnthropicAPILLM(api_key=api_key, base_url=base_url)
     elif provider == "openai":
-        return OpenAIAPILLM()
+        return OpenAIAPILLM(api_key=api_key, base_url=base_url)
     elif provider == "huggingface":
-        return HuggingFaceAPILLM()
+        return HuggingFaceAPILLM(api_key=api_key, base_url=base_url)
     elif provider == "llama-cpp":
         return LlamaCppLLM()
     elif provider == "lm-studio":

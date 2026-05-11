@@ -5,7 +5,10 @@ from dotenv import load_dotenv
 
 root_dir = Path(__file__).resolve().parents[2]
 load_dotenv(root_dir / ".env")
-key_path = root_dir / os.getenv("FERNET_SECRET_KEY")
+key_env = os.getenv("FERNET_SECRET_KEY", "storage/fernet.key")
+key_path = Path(key_env)
+if not key_path.is_absolute():
+    key_path = root_dir / key_path
 
 
 def generate_fernet_key_file():

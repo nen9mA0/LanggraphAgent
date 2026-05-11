@@ -73,13 +73,14 @@ class BaseLLM(ABC):
 class BaseAPILLM(BaseLLM):
     """Base class for API LLMs."""
 
-    def __init__(self, name: str, api_key: Optional[str] = None):
+    def __init__(self, name: str, api_key: Optional[str] = None, base_url: Optional[str] = None):
         super().__init__(name)
         self.api_key = api_key
+        self.base_url = base_url
 
     @staticmethod
     @abstractmethod
-    def validate_key(api_key: str) -> bool:
+    def validate_key(api_key: str, base_url: Optional[str] = None) -> bool:
         """
         Validate the API key.
         Args:

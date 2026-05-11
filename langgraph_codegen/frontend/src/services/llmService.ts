@@ -17,16 +17,29 @@ export interface LLM {
   baseUrl?: string;
 }
 
+const normalizeApiLLM = (llm: any): LLM => ({
+  ...llm,
+  type: 'api',
+  baseUrl: llm.baseUrl || llm.base_url,
+  apiKey: llm.apiKey || llm.api_key,
+});
+
+const normalizeLocalLLM = (llm: any): LLM => ({
+  ...llm,
+  type: 'local',
+  path: llm.path || llm.model,
+});
+
 export const llmService = {
   // API LLMs
   listApiLLMs: async (): Promise<LLM[]> => {
     const response = await axios.get(`${API_BASE_URL}/llms/remote`);
-    return response.data;
+    return response.data.map(normalizeApiLLM);
   },
 
   getApiLLM: async (alias: string): Promise<LLM> => {
     const response = await axios.get(`${API_BASE_URL}/llms/remote/${encodeURIComponent(alias)}`);
-    return response.data;
+    return normalizeApiLLM(response.data);
   },
 
   createApiLLM: async (llm: Omit<LLM, 'id' | 'type'>): Promise<LLM> => {
@@ -43,11 +56,7 @@ export const llmService = {
     try {
       const response = await axios.post(`${API_BASE_URL}/llms/remote`, payload);
       console.log('[createApiLLM] Response:', response.data);
-      return {
-        ...response.data,
-        model: response.data.model || '',
-        apiKey: response.data.api_key
-      };
+      return normalizeApiLLM(response.data);
     } catch (error: any) {
       console.error('[createApiLLM] Error:', error.response?.data || error.message);
       throw error;
@@ -68,11 +77,7 @@ export const llmService = {
     try {
       const response = await axios.put(`${API_BASE_URL}/llms/remote/${encodeURIComponent(alias)}`, payload);
       console.log(`[updateApiLLM] Response for alias ${alias}:`, response.data);
-      return {
-        ...response.data,
-        model: response.data.model || '',
-        apiKey: response.data.api_key
-      };
+      return normalizeApiLLM(response.data);
     } catch (error: any) {
       console.error(`[updateApiLLM] Error for alias ${alias}:`, error.response?.data || error.message);
       throw error;
@@ -86,15 +91,12 @@ export const llmService = {
   // Local LLMs
   listLocalLLMs: async (): Promise<LLM[]> => {
     const response = await axios.get(`${API_BASE_URL}/llms/local`);
-    return response.data.map((llm: any) => ({
-      ...llm,
-      path: llm.path || llm.model
-    }));
+    return response.data.map(normalizeLocalLLM);
   },
 
   getLocalLLM: async (alias: string): Promise<LLM> => {
     const response = await axios.get(`${API_BASE_URL}/llms/local/${encodeURIComponent(alias)}`);
-    return response.data;
+    return normalizeLocalLLM(response.data);
   },
 
   createLocalLLM: async (llm: Omit<LLM, 'type'>): Promise<LLM> => {
@@ -105,16 +107,13 @@ export const llmService = {
     console.log('[createLocalLLM] Sending payload:', JSON.stringify(payload, null, 2));
     const response = await axios.post(`${API_BASE_URL}/llms/local`, payload);
     console.log('[createLocalLLM] Response:', response.data);
-    return response.data;
+    return normalizeLocalLLM(response.data);
   },
 
   updateLocalLLM: async (alias: string, llm: Partial<LLM>): Promise<LLM> => {
     console.log(`[updateLocalLLM] Updating alias ${alias} with payload:`, JSON.stringify(llm, null, 2));
     const response = await axios.put(`${API_BASE_URL}/llms/local/${encodeURIComponent(alias)}`, llm);
-    const responseData = {
-      ...response.data,
-      path: response.data.path || response.data.model
-    };
+    const responseData = normalizeLocalLLM(response.data);
     console.log(`[updateLocalLLM] Response for alias ${alias}:`, responseData);
     return responseData;
   },

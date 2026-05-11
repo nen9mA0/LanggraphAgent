@@ -7,11 +7,14 @@ from typing import Optional, AsyncGenerator
 
 class AnthropicAPILLM(BaseAPILLM):
     """Anthropic API LLM."""
-    def __init__(self, api_key: Optional[str] = None):
-        super().__init__("anthropic", api_key)
+    def __init__(self, api_key: Optional[str] = None, base_url: Optional[str] = None):
+        super().__init__("anthropic", api_key, base_url)
         self.template = self.env.get_template("llms/api/anthropic.jinja")
         if api_key is not None:
-            self.client = Anthropic(api_key=self.api_key)
+            client_kwargs = {"api_key": self.api_key}
+            if self.base_url:
+                client_kwargs["base_url"] = self.base_url
+            self.client = Anthropic(**client_kwargs)
 
 
     def get_completion(
@@ -87,7 +90,7 @@ class AnthropicAPILLM(BaseAPILLM):
 
 
     @staticmethod
-    def validate_key(api_key: str) -> bool:
+    def validate_key(api_key: str, base_url: Optional[str] = None) -> bool:
         """
         Validate the API key by attempting to list models from the Anthropic API.
 
@@ -95,7 +98,10 @@ class AnthropicAPILLM(BaseAPILLM):
             bool: True if the API key is valid, False if it is invalid.
         """
         try:
-            Anthropic(api_key=api_key).models.list()
+            client_kwargs = {"api_key": api_key}
+            if base_url:
+                client_kwargs["base_url"] = base_url
+            Anthropic(**client_kwargs).models.list()
             return True
         except AnthropicAuthError:
             return False
@@ -105,7 +111,7 @@ class AnthropicAPILLM(BaseAPILLM):
 
 
     def validate(self) -> bool:
-        return self.validate_key(self.api_key)
+        return self.validate_key(self.api_key, self.base_url)
 
 
     def list_models(self) -> list[str]:

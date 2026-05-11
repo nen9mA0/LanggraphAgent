@@ -24,7 +24,7 @@ class CodeGenerator:
         self.db: Session = next(get_db())
         
         # Add file logging
-        self.log_file = "/tmp/codegen_debug.log"
+        self.log_file =  os.path.join(os.path.dirname(__file__), "../../log/codegen_debug.log")
         self.log("CodeGenerator initialized")
 
     def sanitize_label(self, label: str) -> str:

@@ -18,20 +18,29 @@ def get_remote_llm_by_alias(db: Session, alias: str):
     return db.query(LLMRemote).filter(LLMRemote.alias == alias).first()
 
 
-def create_remote_llm(db: Session, alias: str, provider: str, api_key: str):
-    cred = LLMRemote(alias=alias, provider=provider)
+def create_remote_llm(db: Session, alias: str, provider: str, api_key: str, base_url: Optional[str] = None):
+    cred = LLMRemote(alias=alias, provider=provider, base_url=base_url)
     cred.api_key = fernet_encrypt(api_key)
     db.add(cred)
     db.commit()
     db.refresh(cred)
     return cred
 
-def update_remote_llm_by_alias(db: Session, old_alias: str, new_alias: str, api_key: str):
+def update_remote_llm_by_alias(
+    db: Session,
+    old_alias: str,
+    new_alias: str,
+    api_key: Optional[str] = None,
+    base_url: Optional[str] = None,
+):
     llm = db.query(LLMRemote).filter(LLMRemote.alias == old_alias).first()
     if not llm:
         return None
     llm.alias = new_alias
-    llm.api_key = fernet_encrypt(api_key)
+    if api_key:
+        llm.api_key = fernet_encrypt(api_key)
+    if base_url is not None:
+        llm.base_url = base_url
     db.commit()
     db.refresh(llm)
     return llm

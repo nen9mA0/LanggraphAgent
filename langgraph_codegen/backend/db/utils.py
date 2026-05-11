@@ -7,9 +7,15 @@ def get_absolute_db_path(keep_url: bool = True) -> str:
     root_dir = Path(__file__).resolve().parents[2]
     load_dotenv(root_dir / ".env")
 
-    raw_url = os.getenv("DATABASE_URL")
+    raw_url = os.getenv("DATABASE_URL", "sqlite:///storage/dev.db")
 
-    relative_path = raw_url.replace("sqlite:///", "")
+    if not raw_url.startswith("sqlite:///"):
+        raise ValueError(
+            f"Unsupported DATABASE_URL: {raw_url}. Only sqlite URLs like "
+            "'sqlite:///storage/dev.db' are currently supported."
+        )
+
+    relative_path = raw_url.replace("sqlite:///", "", 1)
     db_file = root_dir / relative_path
 
 

@@ -6,11 +6,14 @@ import requests
 
 class HuggingFaceAPILLM(BaseAPILLM):
     """Hugging Face API LLM."""
-    def __init__(self, api_key: Optional[str] = None):
-        super().__init__(name="huggingface", api_key=api_key)
+    def __init__(self, api_key: Optional[str] = None, base_url: Optional[str] = None):
+        super().__init__(name="huggingface", api_key=api_key, base_url=base_url)
         self.template = self.env.get_template("llms/api/hugging_face.jinja")
         if api_key is not None:
-            self.client = InferenceClient(api_key=self.api_key)
+            client_kwargs = {"api_key": self.api_key}
+            if self.base_url:
+                client_kwargs["base_url"] = self.base_url
+            self.client = InferenceClient(**client_kwargs)
 
 
     def get_completion(
@@ -69,7 +72,7 @@ class HuggingFaceAPILLM(BaseAPILLM):
                     yield delta.content
     
     @staticmethod
-    def validate_key(api_key: str) -> bool:
+    def validate_key(api_key: str, base_url: Optional[str] = None) -> bool:
         """
         Test if the provided Hugging Face API key is valid.
 
@@ -80,7 +83,7 @@ class HuggingFaceAPILLM(BaseAPILLM):
             bool: True if the key is valid, False otherwise.
         """
 
-        url = "https://huggingface.co/api/whoami-v2"
+        url = base_url.rstrip("/") if base_url else "https://huggingface.co/api/whoami-v2"
         headers = {
             "Authorization": f"Bearer {api_key}"
         }
@@ -97,7 +100,7 @@ class HuggingFaceAPILLM(BaseAPILLM):
 
 
     def validate(self) -> bool:
-        return self.validate_key(self.api_key)
+        return self.validate_key(self.api_key, self.base_url)
 
     def list_models(self) -> list[str]:
         """List available models from the Hugging Face client."""

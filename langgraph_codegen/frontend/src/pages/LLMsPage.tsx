@@ -77,7 +77,7 @@ const LLMsPage = () => {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     
-    if (llmType === 'api' && !apiKey) {
+    if (llmType === 'api' && !apiKey && !isEditing) {
       setError('API key is required');
       return;
     }
@@ -95,7 +95,7 @@ const LLMsPage = () => {
         provider,
         alias: llmAlias,
         ...(llmType === 'api' && { 
-          apiKey,
+          ...(apiKey ? { apiKey } : {}),
           baseUrl: baseUrl || undefined,
           model: selectedModel || undefined
         }),
@@ -178,6 +178,7 @@ const LLMsPage = () => {
     setLocalProvider('llama-cpp');
     setSelectedModel('');
     setApiKey('');
+    setBaseUrl('');
     setAlias('');
     setError(null);
     setIsEditing(null);
@@ -204,7 +205,8 @@ const LLMsPage = () => {
         },
         body: JSON.stringify({
           provider: apiProvider,
-          api_key: apiKey  // This matches the backend schema's field name
+          api_key: apiKey,  // This matches the backend schema's field name
+          base_url: baseUrl || undefined
         }),
       });
 
@@ -534,7 +536,7 @@ const LLMsPage = () => {
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
-                      handleDelete(llm.id, llm.type);
+                      handleDelete(llm.alias, llm.type);
                     }}
                     className="text-gray-400 hover:text-red-400 p-1.5 rounded-full hover:bg-red-900/20 transition-colors disabled:opacity-50"
                     title="Delete model"
@@ -896,6 +898,19 @@ const LLMsPage = () => {
               {llmType === 'api' && (
                 <div>
                   <label className="block text-sm font-medium text-gray-300 mb-1">
+                    API Base URL / Endpoint
+                  </label>
+                  <input
+                    type="text"
+                    value={baseUrl}
+                    onChange={(e) => setBaseUrl(e.target.value)}
+                    placeholder="https://api.openai.com/v1 or your custom endpoint"
+                    className="w-full bg-gray-700 border border-gray-600 rounded-lg px-4 py-2 text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent mb-4"
+                  />
+                  <p className="mt-1 mb-4 text-xs text-gray-400">
+                    The provider controls the request format. The base URL can point to a third-party or self-hosted endpoint that supports that provider's API shape.
+                  </p>
+                  <label className="block text-sm font-medium text-gray-300 mb-1">
                     API Key
                   </label>
                   <div className="space-y-2">
@@ -916,7 +931,7 @@ const LLMsPage = () => {
                           'hf_...'
                         }
                         className="w-full bg-gray-700 border border-gray-600 rounded-lg px-4 py-2 text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent pr-32"
-                        required
+                        required={!isEditing}
                       />
                       <button
                         type="button"

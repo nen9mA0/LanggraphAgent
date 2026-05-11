@@ -25,9 +25,9 @@ def list_remote_llms(limit: Optional[int] = None, db: Session = Depends(get_db))
     return get_remote_llms(db, limit)
 
 
-@router.post("/remote")
+@router.post("/remote", response_model=RemoteLLMOut)
 def new_api_key(llm: RemoteLLM, db: Session = Depends(get_db)):
-    return create_remote_llm(db, llm.alias, llm.provider, llm.api_key)
+    return create_remote_llm(db, llm.alias, llm.provider, llm.api_key, llm.base_url)
 
 
 @router.get("/remote/{alias}", description="Get a remote LLM by alias", response_model=RemoteLLMOut)
@@ -35,9 +35,15 @@ def get_remote_llm(alias: str, db: Session = Depends(get_db)):
     return get_remote_llm_by_alias(db, alias)
 
 
-@router.put("/remote/{alias}", description="Update a remote LLM by alias")
+@router.put("/remote/{alias}", description="Update a remote LLM by alias", response_model=RemoteLLMOut)
 def update_api_key(alias: str, llm: RemoteLLMUpdate, db: Session = Depends(get_db)):
-    updated = update_remote_llm_by_alias(db, old_alias=alias, new_alias=llm.alias, api_key=llm.api_key)
+    updated = update_remote_llm_by_alias(
+        db,
+        old_alias=alias,
+        new_alias=llm.alias,
+        api_key=llm.api_key,
+        base_url=llm.base_url,
+    )
     if not updated:
         raise HTTPException(status_code=404, detail="LLM not found")
     return updated
@@ -75,8 +81,12 @@ async def get_available_remote_embeddings_models(alias: str = Path(..., descript
 @router.post("/remote/validate-key", response_model=LLMValidationResponse, description="Validate a remote LLM API key")
 async def validate_llm_key(data: LLMValidationRequest):
     try:
-        llm = get_llm_client_by_provider(provider=data.provider.lower().replace(" ", "_"))
-        if not llm.validate_key(data.api_key):
+        llm = get_llm_client_by_provider(
+            provider=data.provider.lower().replace(" ", "_"),
+            api_key=data.api_key,
+            base_url=data.base_url,
+        )
+        if not llm.validate():
             return {"valid": False, "message": "Invalid API key"}
         return {"valid": True, "message": "API key is valid"}
     except Exception as e:
