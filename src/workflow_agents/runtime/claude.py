@@ -14,23 +14,26 @@ from .base import ManagedAgentRuntime
 
 
 class ClaudeCodeRuntime(ManagedAgentRuntime):
-    """Managed runtime that executes Claude Code in streaming JSON mode."""
+    """Managed runtime that keeps a Claude Code stream-json session alive across turns."""
 
     def __init__(self, config: AgentNodeConfig, workspace) -> None:
-        """Initialize Claude runtime process bookkeeping."""
+        """Initialize Claude runtime process and reader thread bookkeeping."""
         super().__init__(config, workspace)
         self._active_process: subprocess.Popen[str] | None = None
         self._stderr_tail: deque[str] = deque(maxlen=50)
-        self._worker: threading.Thread | None = None
+        self._stdout_thread: threading.Thread | None = None
+        self._stderr_thread: threading.Thread | None = None
+        self._stdin_lock = threading.RLock()
 
     def _start_impl(self) -> None:
-        """Validate that the Claude executable is available."""
+        """Validate the Claude executable and launch the long-lived stream-json process."""
         executable = self.config.executable_path or "claude"
         if shutil.which(executable) is None and not Path(executable).exists():
             raise FileNotFoundError(f"claude executable not found: {executable}")
+        self._launch_process()
 
     def _build_args(self) -> list[str]:
-        """Build the Claude CLI arguments for the next turn."""
+        """Build the Claude CLI arguments for the current long-lived session."""
         args = [
             self.config.executable_path or "claude",
             "-p",
@@ -54,8 +57,12 @@ class ClaudeCodeRuntime(ManagedAgentRuntime):
         args.extend(self.config.cli_args)
         return args
 
-    def _send_input_impl(self, prompt: str, turn_id: str) -> None:
-        """Launch a Claude process for the turn and stream results asynchronously."""
+    def _launch_process(self) -> None:
+        """Start the Claude process if it is not already running."""
+        process = self._active_process
+        if process is not None and process.poll() is None:
+            return
+
         self._stderr_tail.clear()
         process = subprocess.Popen(
             self._build_args(),
@@ -69,137 +76,202 @@ class ClaudeCodeRuntime(ManagedAgentRuntime):
             bufsize=1,
         )
         self._active_process = process
-        self._worker = threading.Thread(target=self._run_turn_worker, args=(process, turn_id, prompt), daemon=True)
-        self._worker.start()
+        self._stdout_thread = threading.Thread(target=self._stdout_loop, args=(process,), daemon=True)
+        self._stderr_thread = threading.Thread(target=self._stderr_loop, args=(process,), daemon=True)
+        self._stdout_thread.start()
+        self._stderr_thread.start()
 
-    def _run_turn_worker(self, process: subprocess.Popen[str], turn_id: str, prompt: str) -> None:
-        """Drive one Claude turn from stdin write through stdout event parsing."""
-        stderr_thread = threading.Thread(target=self._drain_stderr, args=(process,), daemon=True)
-        stderr_thread.start()
+    def _send_input_impl(self, prompt: str, turn_id: str) -> None:
+        """Send a single user turn into the running Claude stream-json session."""
+        self._launch_process()
+        process = self._active_process
+        if process is None or process.stdin is None:
+            raise RuntimeError("claude process stdin unavailable")
 
-        try:
-            if process.stdin is None or process.stdout is None:
-                raise RuntimeError("claude process stdio unavailable")
-
-            payload = {
-                "type": "user",
-                "message": {"role": "user", "content": [{"type": "text", "text": prompt}]},
-            }
+        payload = {
+            "type": "user",
+            "message": {"role": "user", "content": [{"type": "text", "text": prompt}]},
+        }
+        with self._stdin_lock:
             process.stdin.write(json.dumps(payload, ensure_ascii=True))
             process.stdin.write("\n")
             process.stdin.flush()
-            process.stdin.close()
 
-            final_output = ""
-            final_status = "completed"
-            final_error = ""
-            latest_session_id = self.session_id
-
+    def _stdout_loop(self, process: subprocess.Popen[str]) -> None:
+        """Read Claude stdout and map stream-json events into runtime state."""
+        if process.stdout is None:
+            return
+        try:
             for line in process.stdout:
                 text = line.strip()
                 if not text:
                     continue
-                message = json.loads(text)
-                message_type = message.get("type")
-                if message_type == "system":
-                    latest_session_id = message.get("session_id", latest_session_id)
-                    self._set_session_id(latest_session_id)
-                    self._record_event(turn_id, "status", content="running")
-                elif message_type == "assistant":
-                    assistant_message = message.get("message", {})
-                    usage = assistant_message.get("usage") or {}
-                    self._merge_usage(
-                        turn_id,
-                        TokenUsageSnapshot(
-                            input_tokens=int(usage.get("input_tokens", 0) or 0),
-                            output_tokens=int(usage.get("output_tokens", 0) or 0),
-                            cache_read_tokens=int(usage.get("cache_read_input_tokens", 0) or 0),
-                            cache_write_tokens=int(usage.get("cache_creation_input_tokens", 0) or 0),
-                            context_window_tokens=self.config.context_window_tokens,
-                        ),
-                    )
-                    for block in assistant_message.get("content", []):
-                        block_type = block.get("type")
-                        if block_type == "text":
-                            self._record_event(turn_id, "text", content=block.get("text", ""))
-                        elif block_type == "thinking":
-                            self._record_event(turn_id, "thinking", content=block.get("text", ""))
-                        elif block_type == "tool_use":
-                            self._record_event(
-                                turn_id,
-                                "tool_use",
-                                tool_name=block.get("name", ""),
-                                call_id=block.get("id", ""),
-                                payload=dict(block.get("input", {}) or {}),
-                            )
-                elif message_type == "user":
-                    user_message = message.get("message", {})
-                    for block in user_message.get("content", []):
-                        if block.get("type") == "tool_result":
-                            content = block.get("content", "")
-                            if not isinstance(content, str):
-                                content = json.dumps(content, ensure_ascii=True)
-                            self._record_event(
-                                turn_id,
-                                "tool_result",
-                                call_id=block.get("tool_use_id", ""),
-                                content=content,
-                            )
-                elif message_type == "log":
-                    log_entry = message.get("log", {})
-                    self._record_event(turn_id, "log", content=log_entry.get("message", ""))
-                elif message_type == "result":
-                    latest_session_id = message.get("session_id", latest_session_id)
-                    self._set_session_id(latest_session_id)
-                    final_output = message.get("result", final_output)
-                    if message.get("is_error"):
-                        final_status = "failed"
-                        final_error = final_output or "claude returned an error result"
-
-            exit_code = process.wait(timeout=self.config.turn_timeout_seconds)
-            stderr_thread.join(timeout=1.0)
-            if exit_code != 0 and final_status == "completed":
-                final_status = "failed"
-                final_error = "\n".join(self._stderr_tail) or f"claude exited with code {exit_code}"
-            self._complete_turn(
-                turn_id,
-                status=final_status,
-                final_output=final_output or self.get_output_text(),
-                error=final_error,
-                session_id=latest_session_id,
-            )
-        except Exception as exc:
-            self._complete_turn(turn_id, status="failed", error=str(exc), session_id=self.session_id)
+                self._handle_message(process, json.loads(text))
         finally:
             if process.stdout is not None:
                 process.stdout.close()
-            if process.stderr is not None:
-                process.stderr.close()
-            self._active_process = None
+            self._mark_process_exit(process)
 
-    def _drain_stderr(self, process: subprocess.Popen[str]) -> None:
-        """Capture a bounded tail of Claude stderr output for diagnostics."""
+    def _stderr_loop(self, process: subprocess.Popen[str]) -> None:
+        """Read Claude stderr and keep only a bounded diagnostic tail."""
         if process.stderr is None:
             return
-        for line in process.stderr:
-            text = line.rstrip()
-            if text:
-                self._stderr_tail.append(text)
+        try:
+            for line in process.stderr:
+                text = line.rstrip()
+                if text:
+                    self._stderr_tail.append(text)
+        finally:
+            if process.stderr is not None:
+                process.stderr.close()
+
+    def _handle_message(self, process: subprocess.Popen[str], message: dict[str, Any]) -> None:
+        """Translate one Claude stream-json message into runtime events and turn state."""
+        with self._lock:
+            active_turn_id = self._current_turn.result.turn_id if self._current_turn is not None else ""
+
+        message_type = str(message.get("type", ""))
+        if message_type == "system":
+            session_id = str(message.get("session_id", "") or "")
+            self._set_session_id(session_id)
+            if active_turn_id:
+                self._record_event(active_turn_id, "status", content="running")
+            return
+
+        if not active_turn_id:
+            return
+
+        if message_type == "assistant":
+            assistant_message = message.get("message", {})
+            if not isinstance(assistant_message, dict):
+                return
+
+            usage = assistant_message.get("usage") or {}
+            if isinstance(usage, dict):
+                self._merge_usage(
+                    active_turn_id,
+                    TokenUsageSnapshot(
+                        input_tokens=int(usage.get("input_tokens", 0) or 0),
+                        output_tokens=int(usage.get("output_tokens", 0) or 0),
+                        cache_read_tokens=int(usage.get("cache_read_input_tokens", 0) or 0),
+                        cache_write_tokens=int(usage.get("cache_creation_input_tokens", 0) or 0),
+                        context_window_tokens=self.config.context_window_tokens,
+                    ),
+                )
+
+            for block in assistant_message.get("content", []):
+                if not isinstance(block, dict):
+                    continue
+                block_type = block.get("type")
+                if block_type == "text":
+                    self._record_event(active_turn_id, "text", content=str(block.get("text", "") or ""))
+                elif block_type == "thinking":
+                    self._record_event(active_turn_id, "thinking", content=str(block.get("text", "") or ""))
+                elif block_type == "tool_use":
+                    payload = block.get("input", {})
+                    self._record_event(
+                        active_turn_id,
+                        "tool_use",
+                        tool_name=str(block.get("name", "") or ""),
+                        call_id=str(block.get("id", "") or ""),
+                        payload=dict(payload) if isinstance(payload, dict) else {},
+                    )
+            return
+
+        if message_type == "user":
+            user_message = message.get("message", {})
+            if not isinstance(user_message, dict):
+                return
+
+            for block in user_message.get("content", []):
+                if not isinstance(block, dict) or block.get("type") != "tool_result":
+                    continue
+                content = block.get("content", "")
+                if not isinstance(content, str):
+                    content = json.dumps(content, ensure_ascii=True)
+                self._record_event(
+                    active_turn_id,
+                    "tool_result",
+                    call_id=str(block.get("tool_use_id", "") or ""),
+                    content=content,
+                )
+            return
+
+        if message_type == "log":
+            log_entry = message.get("log", {})
+            if isinstance(log_entry, dict):
+                self._record_event(active_turn_id, "log", content=str(log_entry.get("message", "") or ""))
+            return
+
+        if message_type == "result":
+            session_id = str(message.get("session_id", "") or "")
+            if session_id:
+                self._set_session_id(session_id)
+            final_output = str(message.get("result", "") or self.get_output_text())
+            final_status = "failed" if bool(message.get("is_error")) else "completed"
+            final_error = final_output if final_status == "failed" else ""
+            self._complete_turn(
+                active_turn_id,
+                status=final_status,
+                final_output=final_output,
+                error=final_error,
+                session_id=session_id or self.session_id,
+            )
+
+    def _mark_process_exit(self, process: subprocess.Popen[str]) -> None:
+        """Fail any active turn when the underlying Claude process exits unexpectedly."""
+        try:
+            exit_code = process.wait(timeout=1.0)
+        except subprocess.TimeoutExpired:
+            exit_code = process.poll()
+
+        with self._lock:
+            is_current_process = process is self._active_process
+            active_turn_id = self._current_turn.result.turn_id if self._current_turn is not None else ""
+
+        if is_current_process:
+            self._active_process = None
+
+        if not active_turn_id:
+            return
+
+        error = "\n".join(self._stderr_tail) or f"claude process exited with code {exit_code}"
+        self._complete_turn(
+            active_turn_id,
+            status="failed",
+            error=error,
+            final_output=self.get_output_text(),
+            session_id=self.session_id,
+        )
 
     def _cancel_active_turn(self, reason: str, status: str) -> None:
-        """Terminate the in-flight Claude process and finalize the turn."""
+        """Terminate the running Claude process and complete the active turn."""
         process = self._active_process
         turn_id = None
         with self._lock:
             if self._current_turn is not None:
                 turn_id = self._current_turn.result.turn_id
+
+        if process and process.stdin is not None and not process.stdin.closed:
+            process.stdin.close()
         if process and process.poll() is None:
             process.kill()
+            try:
+                process.wait(timeout=3.0)
+            except subprocess.TimeoutExpired:
+                pass
+        if process and process.stdout is not None:
+            process.stdout.close()
+        if process and process.stderr is not None:
+            process.stderr.close()
         if turn_id:
             self._complete_turn(turn_id, status=status, error=reason, session_id=self.session_id)
 
     def _shutdown_impl(self) -> None:
-        """Shut down any running Claude turn and join the worker thread."""
+        """Shut down the Claude process and join background reader threads."""
         self._cancel_active_turn("agent runtime shutdown", "aborted")
-        if self._worker is not None:
-            self._worker.join(timeout=1.0)
+        if self._stdout_thread is not None:
+            self._stdout_thread.join(timeout=1.0)
+        if self._stderr_thread is not None:
+            self._stderr_thread.join(timeout=1.0)
+        self._active_process = None

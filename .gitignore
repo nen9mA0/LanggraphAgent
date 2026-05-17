@@ -12,7 +12,9 @@ package-lock.json
 *.njsproj
 *.sln
 *.sw?
+*.pyc
 
+**/__pycache__/**
 .DS_Store/**
 dist
 frontend/dist

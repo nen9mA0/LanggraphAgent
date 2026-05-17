@@ -33,38 +33,41 @@ args = sys.argv[1:]
 session_id = "claude-session-1"
 if "--resume" in args:
     session_id = args[args.index("--resume") + 1]
-payload = json.loads(sys.stdin.readline())
-prompt = payload["message"]["content"][0]["text"]
-events = [
-    {"type": "system", "session_id": session_id},
-    {
-        "type": "assistant",
-        "message": {
-            "role": "assistant",
-            "model": "fake-claude",
-            "usage": {
-                "input_tokens": 4,
-                "output_tokens": 6,
-                "cache_read_input_tokens": 0,
-                "cache_creation_input_tokens": 0,
+for raw in sys.stdin:
+    if not raw.strip():
+        continue
+    payload = json.loads(raw)
+    prompt = payload["message"]["content"][0]["text"]
+    events = [
+        {"type": "system", "session_id": session_id},
+        {
+            "type": "assistant",
+            "message": {
+                "role": "assistant",
+                "model": "fake-claude",
+                "usage": {
+                    "input_tokens": 4,
+                    "output_tokens": 6,
+                    "cache_read_input_tokens": 0,
+                    "cache_creation_input_tokens": 0,
+                },
+                "content": [
+                    {"type": "tool_use", "id": "tool-1", "name": "shell", "input": {"command": "echo hidden"}},
+                    {"type": "text", "text": f"stream:{prompt}"},
+                ],
             },
-            "content": [
-                {"type": "tool_use", "id": "tool-1", "name": "shell", "input": {"command": "echo hidden"}},
-                {"type": "text", "text": f"stream:{prompt}"},
-            ],
         },
-    },
-    {
-        "type": "user",
-        "message": {
-            "role": "user",
-            "content": [{"type": "tool_result", "tool_use_id": "tool-1", "content": "ok"}],
+        {
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": [{"type": "tool_result", "tool_use_id": "tool-1", "content": "ok"}],
+            },
         },
-    },
-    {"type": "result", "session_id": session_id, "result": f"final:{prompt}", "is_error": False},
-]
-for item in events:
-    print(json.dumps(item), flush=True)
+        {"type": "result", "session_id": session_id, "result": f"final:{prompt}", "is_error": False},
+    ]
+    for item in events:
+        print(json.dumps(item), flush=True)
 """
 
 FAKE_CODEX = """
@@ -217,36 +220,39 @@ class WorkflowAgentsTestCase(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             fake_claude = create_cmd_wrapper(Path(temp_dir), "fake_claude_node", FAKE_CLAUDE)
             registry = AgentRuntimeRegistry(base_directory=Path(temp_dir) / ".workflow" / "agent")
-            node = AgentNode(
-                config=AgentNodeConfig(
-                    name="writer",
-                    agent_type="claude",
-                    executable_path=fake_claude,
-                    working_directory=temp_dir,
-                    targets=("reviewer",),
-                ),
-                registry=registry,
-            )
+            try:
+                node = AgentNode(
+                    config=AgentNodeConfig(
+                        name="writer",
+                        agent_type="claude",
+                        executable_path=fake_claude,
+                        working_directory=temp_dir,
+                        targets=("reviewer",),
+                    ),
+                    registry=registry,
+                )
 
-            state = {
-                "mailboxes": {
-                    "writer": [
-                        InterNodeMessage(sender="planner", recipient="writer", content="Draft section A").to_dict()
-                    ]
+                state = {
+                    "mailboxes": {
+                        "writer": [
+                            InterNodeMessage(sender="planner", recipient="writer", content="Draft section A").to_dict()
+                        ]
+                    }
                 }
-            }
-            result = node(state)
+                result = node(state)
 
-            writer_result = result["agent_results"]["writer"]
-            forwarded = result["mailboxes"]["reviewer"][0]
-            self.assertEqual(forwarded["content"], writer_result["final_output"])
-            self.assertIn("Draft section A", writer_result["final_output"])
-            self.assertEqual(result["mailboxes"].get("writer"), [])
+                writer_result = result["agent_results"]["writer"]
+                forwarded = result["mailboxes"]["reviewer"][0]
+                self.assertEqual(forwarded["content"], writer_result["final_output"])
+                self.assertIn("Draft section A", writer_result["final_output"])
+                self.assertEqual(result["mailboxes"].get("writer"), [])
 
-            workspace = Path(writer_result["workspace"])
-            history_lines = workspace.joinpath("history.jsonl").read_text(encoding="utf-8").strip().splitlines()
-            self.assertTrue(any('"kind": "event"' in line for line in history_lines))
-            self.assertNotIn("echo hidden", forwarded["content"])
+                workspace = Path(writer_result["workspace"])
+                history_lines = workspace.joinpath("history.jsonl").read_text(encoding="utf-8").strip().splitlines()
+                self.assertTrue(any('"kind": "event"' in line for line in history_lines))
+                self.assertNotIn("echo hidden", forwarded["content"])
+            finally:
+                registry.shutdown_all()
 
     def test_langgraph_demo_runs_end_to_end_with_fake_cli(self) -> None:
         try:

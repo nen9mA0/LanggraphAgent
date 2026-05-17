@@ -9,3 +9,4 @@
 3. `example_langgraph_demo.md`
 4. `real_agent_demo.md`
 5. `api_reference.md`
+6. `agent_node_architecture.md`
