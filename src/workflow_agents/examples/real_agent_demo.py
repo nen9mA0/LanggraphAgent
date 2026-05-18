@@ -11,6 +11,7 @@ from ..state import AgentGraphState
 from ..types import AgentNodeConfig, InterNodeMessage
 
 CLAUDE_FOLDER = "claude_writer"
+CLAUDE_SDK_FOLDER = "claude_sdk_writer"
 CODEX_FOLDER = "codex_reviewer"
 
 
@@ -26,12 +27,22 @@ def _load_optional_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _load_optional_json_list(path: Path) -> list[Any]:
+    if not path.exists():
+        return []
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, list):
+        raise ValueError(f"expected JSON array in {path}")
+    return list(payload)
+
+
 def ensure_demo_agent_directories(working_directory: str) -> dict[str, Path]:
     root = Path(working_directory).resolve()
     agent_root = root / ".workflow" / "agent"
     claude_root = agent_root / CLAUDE_FOLDER
+    claude_sdk_root = agent_root / CLAUDE_SDK_FOLDER
     codex_root = agent_root / CODEX_FOLDER
-    for folder in (claude_root, codex_root):
+    for folder in (claude_root, claude_sdk_root, codex_root):
         folder.mkdir(parents=True, exist_ok=True)
 
     _ensure_template_files(
@@ -39,12 +50,16 @@ def ensure_demo_agent_directories(working_directory: str) -> dict[str, Path]:
         agent_type="claude",
         default_system_prompt="You are the writer node. Produce a concise draft for the reviewer node.",
     )
+    _ensure_claude_sdk_template_files(
+        claude_sdk_root,
+        default_system_prompt="You are the writer node. Produce a concise draft for the reviewer node.",
+    )
     _ensure_template_files(
         codex_root,
         agent_type="codex",
         default_system_prompt="You are the reviewer node. Review the writer output and return the final answer.",
     )
-    return {"claude": claude_root, "codex": codex_root}
+    return {"claude": claude_root, "claude_sdk": claude_sdk_root, "codex": codex_root}
 
 
 def _ensure_template_files(root: Path, *, agent_type: str, default_system_prompt: str) -> None:
@@ -70,6 +85,107 @@ def _ensure_template_files(root: Path, *, agent_type: str, default_system_prompt
             path.write_text(content, encoding="utf-8")
 
 
+def _ensure_claude_sdk_template_files(root: Path, *, default_system_prompt: str) -> None:
+    files: dict[str, str] = {
+        "system_prompt.txt": default_system_prompt + "\n",
+        "env.json": "{}\n",
+        "client_options.json": "{}\n",
+        "README.txt": (
+            f"Folder: {root.name}\n"
+            "Agent type: claude_sdk\n\n"
+            "Required before running:\n"
+            "- python_executable.txt: absolute path to the Python interpreter that can import claude_agent_sdk\n\n"
+            "Optional:\n"
+            "- sdk_module.txt: SDK import name, default is claude_agent_sdk\n"
+            "- cli_path.txt: path to the claude CLI used by the SDK\n"
+            "- system_prompt.txt: system prompt for the writer node\n"
+            "- env.json: JSON object of environment variables for the worker process\n"
+            "- client_options.json: JSON object forwarded into ClaudeAgentOptions(...)\n\n"
+            "Generated during runs:\n"
+            "- config.json\n"
+            "- runtime.json\n"
+            "- history.jsonl / inbox.jsonl / outbox.jsonl\n"
+        ),
+    }
+    for filename, content in files.items():
+        path = root / filename
+        if not path.exists():
+            path.write_text(content, encoding="utf-8")
+
+
+def _select_writer_folder(claude_backend: str) -> str:
+    if claude_backend == "claude":
+        return CLAUDE_FOLDER
+    if claude_backend == "claude_sdk":
+        return CLAUDE_SDK_FOLDER
+    raise ValueError(f"unsupported claude backend: {claude_backend}")
+
+
+def _build_writer_config(*, working_directory: str, claude_backend: str) -> AgentNodeConfig:
+    root = Path(working_directory).resolve()
+    folder_name = _select_writer_folder(claude_backend)
+    writer_root = root / ".workflow" / "agent" / folder_name
+    common_kwargs = {
+        "name": "writer",
+        "folder_name": folder_name,
+        "working_directory": working_directory,
+        "system_prompt": _load_text(writer_root / "system_prompt.txt"),
+        "env": {str(k): str(v) for k, v in _load_optional_json(writer_root / "env.json").items()},
+        "targets": ("reviewer",),
+        "context_window_tokens": 200_000,
+        "prompt_prefix": (
+            "Produce the writer result only. Do not mention internal tool traces. "
+            "Your output will be forwarded to a reviewer node."
+        ),
+    }
+    if claude_backend == "claude":
+        return AgentNodeConfig(
+            agent_type="claude",
+            executable_path="claude",
+            cli_args=tuple(str(item) for item in _load_optional_json_list(writer_root / "cli_args.json")),
+            **common_kwargs,
+        )
+
+    python_executable = _load_text(writer_root / "python_executable.txt")
+    if not python_executable:
+        raise ValueError(
+            f"missing python_executable.txt in {writer_root}; it must point to a Python interpreter that can import claude_agent_sdk"
+        )
+    sdk_module = _load_text(writer_root / "sdk_module.txt") or "claude_agent_sdk"
+    cli_path = _load_text(writer_root / "cli_path.txt")
+    return AgentNodeConfig(
+        agent_type="claude_sdk",
+        executable_path=python_executable,
+        runtime_options={
+            "python_executable": python_executable,
+            "sdk_module": sdk_module,
+            "cli_path": cli_path or None,
+            "client_options": _load_optional_json(writer_root / "client_options.json"),
+        },
+        **common_kwargs,
+    )
+
+
+def _build_reviewer_config(*, working_directory: str) -> AgentNodeConfig:
+    root = Path(working_directory).resolve()
+    codex_root = root / ".workflow" / "agent" / CODEX_FOLDER
+    return AgentNodeConfig(
+        name="reviewer",
+        folder_name=CODEX_FOLDER,
+        agent_type="codex",
+        executable_path="codex",
+        working_directory=working_directory,
+        system_prompt=_load_text(codex_root / "system_prompt.txt"),
+        cli_args=tuple(str(item) for item in _load_optional_json_list(codex_root / "cli_args.json")),
+        env={str(k): str(v) for k, v in _load_optional_json(codex_root / "env.json").items()},
+        context_window_tokens=200_000,
+        prompt_prefix=(
+            "Review the writer output and return the final answer only. "
+            "Do not include internal execution details."
+        ),
+    )
+
+
 def planner_node(state: AgentGraphState) -> AgentGraphState:
     topic = (state.get("shared") or {}).get("topic", "Please produce a short draft.")
     message = InterNodeMessage(
@@ -84,48 +200,15 @@ def planner_node(state: AgentGraphState) -> AgentGraphState:
     return {"mailboxes": {"writer": [message.to_dict()]}}
 
 
-def build_real_demo_graph(registry: AgentRuntimeRegistry, working_directory: str) -> Any:
+def build_real_demo_graph(registry: AgentRuntimeRegistry, working_directory: str, *, claude_backend: str = "claude") -> Any:
     from langgraph.graph import END, START, StateGraph
 
-    root = Path(working_directory).resolve()
-    claude_root = root / ".workflow" / "agent" / CLAUDE_FOLDER
-    codex_root = root / ".workflow" / "agent" / CODEX_FOLDER
-
     writer = AgentNode(
-        config=AgentNodeConfig(
-            name="writer",
-            folder_name=CLAUDE_FOLDER,
-            agent_type="claude",
-            executable_path="claude",
-            working_directory=working_directory,
-            system_prompt=_load_text(claude_root / "system_prompt.txt"),
-            cli_args=tuple(_load_optional_json(claude_root / "cli_args.json")),
-            env={str(k): str(v) for k, v in _load_optional_json(claude_root / "env.json").items()},
-            targets=("reviewer",),
-            context_window_tokens=200_000,
-            prompt_prefix=(
-                "Produce the writer result only. Do not mention internal tool traces. "
-                "Your output will be forwarded to a reviewer node."
-            ),
-        ),
+        config=_build_writer_config(working_directory=working_directory, claude_backend=claude_backend),
         registry=registry,
     )
     reviewer = AgentNode(
-        config=AgentNodeConfig(
-            name="reviewer",
-            folder_name=CODEX_FOLDER,
-            agent_type="codex",
-            executable_path="codex",
-            working_directory=working_directory,
-            system_prompt=_load_text(codex_root / "system_prompt.txt"),
-            cli_args=tuple(_load_optional_json(codex_root / "cli_args.json")),
-            env={str(k): str(v) for k, v in _load_optional_json(codex_root / "env.json").items()},
-            context_window_tokens=200_000,
-            prompt_prefix=(
-                "Review the writer output and return the final answer only. "
-                "Do not include internal execution details."
-            ),
-        ),
+        config=_build_reviewer_config(working_directory=working_directory),
         registry=registry,
     )
 
@@ -140,13 +223,13 @@ def build_real_demo_graph(registry: AgentRuntimeRegistry, working_directory: str
     return graph.compile()
 
 
-def run_real_demo(*, working_directory: str, topic: str) -> dict[str, Any]:
+def run_real_demo(*, working_directory: str, topic: str, claude_backend: str = "claude") -> dict[str, Any]:
     root = Path(working_directory).resolve()
     root.mkdir(parents=True, exist_ok=True)
     ensure_demo_agent_directories(str(root))
     registry = AgentRuntimeRegistry(base_directory=root / ".workflow" / "agent")
     try:
-        app = build_real_demo_graph(registry, str(root))
+        app = build_real_demo_graph(registry, str(root), claude_backend=claude_backend)
         result = app.invoke({"shared": {"topic": topic}})
         return dict(result)
     finally:
@@ -166,6 +249,12 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Initial topic sent by the planner node.",
     )
     parser.add_argument(
+        "--claude-backend",
+        choices=("claude", "claude_sdk"),
+        default="claude",
+        help="Choose whether the writer node uses the Claude CLI runtime or the Claude Python SDK runtime.",
+    )
+    parser.add_argument(
         "--prepare-only",
         action="store_true",
         help="Only create the .workflow/agent folders and template config files, then exit.",
@@ -183,6 +272,7 @@ def main() -> None:
                 {
                     "prepared": True,
                     "claude_folder": str(folders["claude"]),
+                    "claude_sdk_folder": str(folders["claude_sdk"]),
                     "codex_folder": str(folders["codex"]),
                 },
                 ensure_ascii=False,
@@ -191,7 +281,11 @@ def main() -> None:
         )
         return
 
-    result = run_real_demo(working_directory=args.working_directory, topic=args.topic)
+    result = run_real_demo(
+        working_directory=args.working_directory,
+        topic=args.topic,
+        claude_backend=args.claude_backend,
+    )
     print(json.dumps(result, ensure_ascii=False, indent=2))
 
 

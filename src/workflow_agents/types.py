@@ -7,7 +7,7 @@ from typing import Any, Literal
 from uuid import uuid4
 
 
-AgentKind = Literal["claude", "codex"]
+AgentKind = Literal["claude", "claude_sdk", "codex"]
 TurnStatus = Literal["running", "completed", "failed", "aborted", "timeout"]
 EventType = Literal["text", "thinking", "tool_use", "tool_result", "status", "error", "log"]
 
@@ -203,6 +203,7 @@ class AgentNodeConfig:
     targets: tuple[str, ...] = ()
     prompt_prefix: str = ""
     folder_name: str | None = None
+    runtime_options: dict[str, Any] = field(default_factory=dict)
     instance_key: str = field(default_factory=lambda: uuid4().hex)
 
     def normalized_working_directory(self) -> Path:
@@ -228,5 +229,6 @@ class AgentNodeConfig:
             "targets": list(self.targets),
             "prompt_prefix": self.prompt_prefix,
             "folder_name": self.folder_name,
+            "runtime_options": dict(self.runtime_options),
             "instance_key": self.instance_key,
         }

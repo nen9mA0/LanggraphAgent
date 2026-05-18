@@ -135,6 +135,86 @@ for raw in sys.stdin:
         reply({"jsonrpc": "2.0", "id": payload["id"], "result": {}})
 """
 
+FAKE_CLAUDE_SDK = """
+import asyncio
+
+
+class ClaudeAgentOptions:
+    def __init__(self, **kwargs):
+        self.kwargs = kwargs
+        for key, value in kwargs.items():
+            setattr(self, key, value)
+
+
+class AssistantMessage:
+    def __init__(self, content, usage):
+        self.content = content
+        self.usage = usage
+
+    def model_dump(self):
+        return {"content": self.content, "usage": self.usage}
+
+
+class UserMessage:
+    def __init__(self, content):
+        self.content = content
+
+    def model_dump(self):
+        return {"content": self.content}
+
+
+class ResultMessage:
+    def __init__(self, result, subtype="success"):
+        self.result = result
+        self.subtype = subtype
+
+    def model_dump(self):
+        return {"result": self.result, "subtype": self.subtype}
+
+
+class ClaudeSDKClient:
+    def __init__(self, options):
+        self.options = options
+        self.session_id = getattr(options, "resume", "") or "sdk-session-1"
+        self._prompt = ""
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return None
+
+    async def query(self, prompt):
+        self._prompt = prompt
+
+    def receive_response(self):
+        prompt = self._prompt
+
+        async def iterator():
+            yield AssistantMessage(
+                content=[
+                    {"type": "thinking", "text": "reasoning"},
+                    {"type": "tool_use", "id": "sdk-tool-1", "name": "read_file", "input": {"path": "README.md"}},
+                    {"type": "text", "text": f"sdk-stream:{prompt}"},
+                ],
+                usage={
+                    "input_tokens": 5,
+                    "output_tokens": 8,
+                    "cache_read_input_tokens": 0,
+                    "cache_creation_input_tokens": 0,
+                },
+            )
+            yield UserMessage(
+                content=[{"type": "tool_result", "tool_use_id": "sdk-tool-1", "content": "file-ok"}]
+            )
+            yield ResultMessage(result=f"sdk-final:{prompt}")
+
+        return iterator()
+
+    async def interrupt(self):
+        await asyncio.sleep(0)
+"""
+
 
 class WorkflowAgentsTestCase(unittest.TestCase):
     def test_workspace_names_are_suffixed_on_collision(self) -> None:
@@ -185,6 +265,38 @@ class WorkflowAgentsTestCase(unittest.TestCase):
             second = runtime.run_turn("world")
             self.assertEqual(second.session_id, "claude-session-1")
             self.assertEqual(second.final_output, "final:world")
+            runtime.shutdown()
+
+    def test_claude_sdk_runtime_exposes_usage_completion_and_persists_session(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            sdk_module = Path(temp_dir) / "claude_agent_sdk.py"
+            sdk_module.write_text(FAKE_CLAUDE_SDK, encoding="utf-8")
+            registry = AgentRuntimeRegistry(base_directory=Path(temp_dir) / ".workflow" / "agent")
+            config = AgentNodeConfig(
+                name="claude_sdk_writer",
+                agent_type="claude_sdk",
+                executable_path=sys.executable,
+                working_directory=temp_dir,
+                context_window_tokens=100,
+                env={"PYTHONPATH": temp_dir},
+                runtime_options={"python_executable": sys.executable},
+            )
+
+            runtime = registry.get_or_create(config)
+            first = runtime.run_turn("hello sdk")
+            self.assertEqual(first.status, "completed")
+            self.assertEqual(first.final_output, "sdk-final:hello sdk")
+            self.assertTrue(runtime.is_output_complete())
+            self.assertAlmostEqual(runtime.get_context_usage_ratio() or 0.0, 0.13)
+            self.assertEqual(runtime.session_id, "sdk-session-1")
+            event_types = [event.event_type for event in first.events]
+            self.assertIn("thinking", event_types)
+            self.assertIn("tool_use", event_types)
+            self.assertIn("tool_result", event_types)
+
+            second = runtime.run_turn("world sdk")
+            self.assertEqual(second.session_id, "sdk-session-1")
+            self.assertEqual(second.final_output, "sdk-final:world sdk")
             runtime.shutdown()
 
     def test_codex_runtime_keeps_thread_and_streams_tool_events(self) -> None:
@@ -272,6 +384,38 @@ class WorkflowAgentsTestCase(unittest.TestCase):
             self.assertEqual(result["agent_results"]["reviewer"]["status"], "completed")
             self.assertIn("Explain agent node orchestration in two steps.", result["agent_results"]["reviewer"]["final_output"])
             self.assertTrue((Path(temp_dir) / ".workflow" / "agent" / "writer" / "config.json").exists())
+
+    def test_real_demo_prepare_only_creates_claude_and_claude_sdk_folders(self) -> None:
+        from workflow_agents.examples.real_agent_demo import ensure_demo_agent_directories
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            folders = ensure_demo_agent_directories(temp_dir)
+            self.assertTrue(folders["claude"].joinpath("cli_args.json").exists())
+            self.assertTrue(folders["claude_sdk"].joinpath("python_executable.txt").exists() is False)
+            self.assertTrue(folders["claude_sdk"].joinpath("client_options.json").exists())
+            self.assertTrue(folders["codex"].joinpath("cli_args.json").exists())
+
+    def test_real_demo_builds_claude_sdk_writer_config_from_files(self) -> None:
+        from workflow_agents.examples.real_agent_demo import _build_writer_config, ensure_demo_agent_directories
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            folders = ensure_demo_agent_directories(temp_dir)
+            sdk_root = folders["claude_sdk"]
+            sdk_root.joinpath("python_executable.txt").write_text(sys.executable + "\n", encoding="utf-8")
+            sdk_root.joinpath("sdk_module.txt").write_text("claude_agent_sdk\n", encoding="utf-8")
+            sdk_root.joinpath("cli_path.txt").write_text("C:/tools/claude.cmd\n", encoding="utf-8")
+            sdk_root.joinpath("client_options.json").write_text(
+                json.dumps({"permission_mode": "bypassPermissions"}, ensure_ascii=True),
+                encoding="utf-8",
+            )
+
+            config = _build_writer_config(working_directory=temp_dir, claude_backend="claude_sdk")
+            self.assertEqual(config.agent_type, "claude_sdk")
+            self.assertEqual(config.executable_path, sys.executable)
+            self.assertEqual(config.runtime_options["python_executable"], sys.executable)
+            self.assertEqual(config.runtime_options["sdk_module"], "claude_agent_sdk")
+            self.assertEqual(config.runtime_options["cli_path"], "C:/tools/claude.cmd")
+            self.assertEqual(config.runtime_options["client_options"]["permission_mode"], "bypassPermissions")
 
 
 if __name__ == "__main__":

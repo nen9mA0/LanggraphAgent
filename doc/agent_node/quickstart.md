@@ -2,7 +2,7 @@
 
 ## 目标
 
-`src/workflow_agents` 提供一套把 `claude` 和 `codex` 这类 CLI agent 封装成 LangGraph node 的最小实现。
+`src/workflow_agents` 提供一套把 `claude`、`claude_sdk` 和 `codex` 这类 agent backend 封装成 LangGraph node 的最小实现。
 
 核心约束：
 
@@ -20,6 +20,7 @@ src/workflow_agents/
 |- runtime/
 |  |- base.py
 |  |- claude.py
+|  |- claude_sdk.py
 |  `- codex.py
 |- node.py
 |- registry.py
@@ -45,6 +46,11 @@ python -m workflow_agents.examples.langgraph_demo ^
   --codex-exec codex ^
   --topic "Write and review a short release summary."
 ```
+
+如果你想让 Claude 侧走 Python SDK，而不是直接走 `claude` CLI，请看：
+
+- `doc/agent_node/claude_sdk_runtime.md`
+- `doc/agent_node/real_agent_demo.md`
 
 运行后会输出最终 graph state，并在工作目录下生成：
 
@@ -73,10 +79,13 @@ registry = AgentRuntimeRegistry()
 writer = AgentNode(
     config=AgentNodeConfig(
         name="writer",
-        agent_type="claude",
-        executable_path="claude",
+        agent_type="claude_sdk",
+        executable_path="E:/Python/envs/claude/python.exe",
         working_directory="E:/Project/program_workflow",
         targets=("reviewer",),
+        runtime_options={
+            "python_executable": "E:/Python/envs/claude/python.exe",
+        },
     ),
     registry=registry,
 )
