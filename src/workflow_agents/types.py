@@ -203,8 +203,60 @@ class AgentNodeConfig:
     targets: tuple[str, ...] = ()
     prompt_prefix: str = ""
     folder_name: str | None = None
+    persist_runtime_history: bool = False
+    persist_node_mailboxes: bool = True
     runtime_options: dict[str, Any] = field(default_factory=dict)
     instance_key: str = field(default_factory=lambda: uuid4().hex)
+
+    @classmethod
+    def from_provider_defaults(
+        cls,
+        *,
+        home_directory: str | Path | None = None,
+        reuse_fields: tuple[str, ...] = ("model",),
+        provider_config_directory: str | Path | None = None,
+        **kwargs: Any,
+    ) -> "AgentNodeConfig":
+        """Build a config by reusing a minimal supported subset from provider-native config files."""
+        from .config_reuse import build_reused_agent_config
+
+        agent_type = kwargs["agent_type"]
+        actual_working_directory = kwargs["working_directory"]
+        working_directory = provider_config_directory or actual_working_directory
+        reused = build_reused_agent_config(
+            agent_type=agent_type,
+            working_directory=working_directory,
+            reuse_fields=reuse_fields,
+            home_directory=home_directory,
+            include_home_defaults=provider_config_directory is None,
+        )
+        if (
+            provider_config_directory is not None
+            and Path(provider_config_directory).resolve() != Path(actual_working_directory).resolve()
+            and not reused.model
+            and not reused.skills
+            and not reused.mcp
+            and not reused.runtime_options
+        ):
+            reused = build_reused_agent_config(
+                agent_type=agent_type,
+                working_directory=actual_working_directory,
+                reuse_fields=reuse_fields,
+                home_directory=home_directory,
+                include_home_defaults=True,
+            )
+
+        if not kwargs.get("model"):
+            kwargs["model"] = reused.model
+
+        runtime_options = dict(reused.runtime_options)
+        if reused.skills:
+            runtime_options.setdefault("reused_skills", list(reused.skills))
+        if reused.mcp:
+            runtime_options.setdefault("reused_mcp", dict(reused.mcp))
+        runtime_options.update(dict(kwargs.get("runtime_options") or {}))
+        kwargs["runtime_options"] = runtime_options
+        return cls(**kwargs)
 
     def normalized_working_directory(self) -> Path:
         """Return the absolute working directory for the agent."""
@@ -229,6 +281,8 @@ class AgentNodeConfig:
             "targets": list(self.targets),
             "prompt_prefix": self.prompt_prefix,
             "folder_name": self.folder_name,
+            "persist_runtime_history": self.persist_runtime_history,
+            "persist_node_mailboxes": self.persist_node_mailboxes,
             "runtime_options": dict(self.runtime_options),
             "instance_key": self.instance_key,
         }

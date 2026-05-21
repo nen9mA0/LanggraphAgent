@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import copy
 import threading
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -78,10 +77,7 @@ class ManagedAgentRuntime(ABC):
             )
             turn_context = _TurnContext(result=turn_result)
             self._current_turn = turn_context
-            self.workspace.append_jsonl(
-                self.workspace.history_path,
-                {"kind": "turn_started", "turn": turn_result.to_dict()},
-            )
+            self._append_runtime_history({"kind": "turn_started", "turn": turn_result.to_dict()})
         try:
             self._send_input_impl(prompt, turn_result.turn_id)
         except Exception as exc:
@@ -180,10 +176,7 @@ class ManagedAgentRuntime(ABC):
             self._current_turn.result.events.append(event)
             if event_type == "text" and content:
                 self._current_turn.result.final_output += content
-            self.workspace.append_jsonl(
-                self.workspace.history_path,
-                {"kind": "event", "turn_id": turn_id, "event": event.to_dict()},
-            )
+            self._append_runtime_history({"kind": "event", "turn_id": turn_id, "event": event.to_dict()})
 
     def _replace_usage(self, turn_id: str, usage: TokenUsageSnapshot) -> None:
         """Replace token usage for the specified active turn."""
@@ -248,11 +241,14 @@ class ManagedAgentRuntime(ABC):
                 turn_context.result.usage = TokenUsageSnapshot.from_dict(usage.to_dict())
             self._last_turn = TurnResult.from_dict(turn_context.result.to_dict())
             self._current_turn = None
-            self.workspace.append_jsonl(
-                self.workspace.history_path,
-                {"kind": "turn_completed", "turn": self._last_turn.to_dict()},
-            )
+            self._append_runtime_history({"kind": "turn_completed", "turn": self._last_turn.to_dict()})
             turn_context.completion.set()
+
+    def _append_runtime_history(self, payload: dict[str, Any]) -> None:
+        """Persist runtime-level transcript data when history persistence is enabled."""
+        if not self.config.persist_runtime_history:
+            return
+        self.workspace.append_jsonl(self.workspace.history_path, payload)
 
     @abstractmethod
     def _start_impl(self) -> None:

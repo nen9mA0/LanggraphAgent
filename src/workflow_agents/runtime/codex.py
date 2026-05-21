@@ -18,7 +18,7 @@ class CodexRuntime(ManagedAgentRuntime):
     """Managed runtime that talks to Codex through its JSON-RPC app-server."""
 
     def __init__(self, config: AgentNodeConfig, workspace) -> None:
-        """Initialize Codex runtime process and RPC bookkeeping."""
+        """Initialize Codex runtime process, request tracking, and turn state."""
         super().__init__(config, workspace)
         self._process: subprocess.Popen[str] | None = None
         self._reader_thread: threading.Thread | None = None
@@ -29,15 +29,14 @@ class CodexRuntime(ManagedAgentRuntime):
         self._rpc_lock = threading.RLock()
         self._thread_id = self.session_id
         self._active_turn_id = ""
+        self._active_remote_turn_id = ""
+        self._item_text_buffers: dict[str, str] = {}
 
     def _start_impl(self) -> None:
         """Start the Codex app-server and initialize or resume a thread."""
-        executable = self.config.executable_path or "codex"
-        if shutil.which(executable) is None and not Path(executable).exists():
-            raise FileNotFoundError(f"codex executable not found: {executable}")
-
+        executable = self._resolve_executable()
         process = subprocess.Popen(
-            [executable, "app-server", "--listen", "stdio://", *self.config.cli_args],
+            [executable, "app-server", "--listen", "stdio://", *self._config_override_args(), *self.config.cli_args],
             cwd=str(self.config.normalized_working_directory()),
             env={**os.environ, **self.config.env},
             stdin=subprocess.PIPE,
@@ -75,7 +74,7 @@ class CodexRuntime(ManagedAgentRuntime):
                     },
                     timeout=self.config.startup_timeout_seconds,
                 )
-                self._thread_id = (((response or {}).get("thread")) or {}).get("id", self._thread_id)
+                self._thread_id = self._extract_thread_id(response) or self._thread_id
             except Exception:
                 self._thread_id = ""
 
@@ -90,17 +89,31 @@ class CodexRuntime(ManagedAgentRuntime):
                 },
                 timeout=self.config.startup_timeout_seconds,
             )
-            self._thread_id = (((response or {}).get("thread")) or {}).get("id", "")
+            self._thread_id = self._extract_thread_id(response)
             if not self._thread_id:
                 raise RuntimeError("codex thread/start returned no thread id")
             self._set_session_id(self._thread_id)
+
+    def _resolve_executable(self) -> str:
+        """Return the Codex executable path after validating availability."""
+        if self.config.executable_path:
+            executable = self.config.executable_path
+        else:
+            executable = shutil.which("codex")
+            if not executable:
+                raise ValueError("codex executable is not available on PATH")
+        if shutil.which(executable) is None and not Path(executable).exists():
+            raise FileNotFoundError(f"codex executable not found: {executable}")
+        return executable
 
     def _send_input_impl(self, prompt: str, turn_id: str) -> None:
         """Send a new ``turn/start`` request to the active Codex thread."""
         if not self._thread_id:
             raise RuntimeError("codex thread not initialized")
         self._active_turn_id = turn_id
-        self._rpc_request(
+        self._active_remote_turn_id = ""
+        self._item_text_buffers.clear()
+        response = self._rpc_request(
             "turn/start",
             {
                 "threadId": self._thread_id,
@@ -108,6 +121,7 @@ class CodexRuntime(ManagedAgentRuntime):
             },
             timeout=self.config.startup_timeout_seconds,
         )
+        self._active_remote_turn_id = self._extract_turn_id(response)
 
     def _rpc_notify(self, method: str, params: dict[str, Any] | None = None) -> None:
         """Send a JSON-RPC notification to the Codex app-server."""
@@ -133,14 +147,14 @@ class CodexRuntime(ManagedAgentRuntime):
 
     def _write_rpc(self, payload: dict[str, Any]) -> None:
         """Write one JSON-RPC message to the Codex stdin transport."""
-        if self._process is None or self._process.stdin is None:
+        if self._process is None or self._process.stdin is None or self._process.stdin.closed:
             raise RuntimeError("codex process is not running")
         self._process.stdin.write(json.dumps(payload, ensure_ascii=True))
         self._process.stdin.write("\n")
         self._process.stdin.flush()
 
     def _reader_loop(self) -> None:
-        """Read stdout lines from Codex and dispatch RPC responses or notifications."""
+        """Read stdout lines from Codex and dispatch responses, notifications, or server requests."""
         process = self._process
         if process is None or process.stdout is None:
             return
@@ -152,6 +166,8 @@ class CodexRuntime(ManagedAgentRuntime):
                 payload = json.loads(text)
                 if "id" in payload and ("result" in payload or "error" in payload):
                     self._handle_response(payload)
+                elif "id" in payload and "method" in payload:
+                    self._handle_server_request(payload)
                 elif "method" in payload:
                     self._handle_notification(payload)
         finally:
@@ -185,82 +201,319 @@ class CodexRuntime(ManagedAgentRuntime):
         else:
             response_queue.put({"result": payload.get("result", {})})
 
+    def _handle_server_request(self, payload: dict[str, Any]) -> None:
+        """Handle JSON-RPC requests initiated by the Codex app-server."""
+        request_id = payload.get("id")
+        method = str(payload.get("method", ""))
+        params = payload.get("params", {}) or {}
+
+        if method == "commandExecution/requestApproval":
+            self._respond_to_server_request(request_id, {"decision": "approved", "scope": "once"})
+            return
+
+        if method == "tool/requestInput":
+            self._respond_to_server_request(request_id, {"text": ""})
+            return
+
+        if method == "item/tool/requestUserInput":
+            self._respond_to_server_request(request_id, {"values": []})
+            return
+
+        self._respond_to_server_request(request_id, {})
+        if self._active_turn_id:
+            self._record_event(
+                self._active_turn_id,
+                "log",
+                content=f"unhandled Codex server request: {method}",
+                payload=dict(params) if isinstance(params, dict) else {},
+            )
+
+    def _respond_to_server_request(self, request_id: Any, result: dict[str, Any]) -> None:
+        """Return a JSON-RPC success response for a server-initiated request."""
+        self._write_rpc({"jsonrpc": "2.0", "id": request_id, "result": result})
+
     def _handle_notification(self, payload: dict[str, Any]) -> None:
         """Handle Codex notifications and convert them into runtime events."""
-        method = payload.get("method", "")
+        method = str(payload.get("method", ""))
         params = payload.get("params", {}) or {}
         if method == "turn/started":
+            turn = params.get("turn", {}) or {}
+            remote_turn_id = str(turn.get("id", "") or "")
+            if remote_turn_id:
+                self._active_remote_turn_id = remote_turn_id
             self._record_event(self._active_turn_id, "status", content="running")
             return
+        if method in {"turn/updated", "turn/stream"}:
+            self._handle_turn_update(params)
+            return
         if method == "turn/completed":
-            turn = params.get("turn", {}) or {}
-            usage = turn.get("usage", {}) or {}
-            status = turn.get("status", "completed")
-            final_status = "completed"
-            final_error = ""
-            if status in {"failed"}:
-                final_status = "failed"
-                final_error = (((turn.get("error") or {}).get("message")) if isinstance(turn.get("error"), dict) else "") or "codex turn failed"
-            elif status in {"cancelled", "canceled", "aborted", "interrupted"}:
-                final_status = "aborted"
-                final_error = "codex turn aborted"
-            self._complete_turn(
-                self._active_turn_id,
-                status=final_status,
-                error=final_error,
-                session_id=self._thread_id,
-                usage=TokenUsageSnapshot(
-                    input_tokens=int(usage.get("input_tokens", 0) or 0),
-                    output_tokens=int(usage.get("output_tokens", 0) or 0),
-                    cache_read_tokens=int(usage.get("cache_read_tokens", 0) or 0),
-                    cache_write_tokens=int(usage.get("cache_write_tokens", 0) or 0),
-                    context_window_tokens=self.config.context_window_tokens,
-                ),
-            )
-            self._active_turn_id = ""
+            self._handle_turn_completed(params)
+            return
+        if method == "turn/failed":
+            self._handle_turn_failed(params)
             return
         if not method.startswith("item/"):
             return
+        if method in {"item/started", "item/updated", "item/completed"}:
+            self._handle_item_notification(method, params)
+
+    def _handle_turn_update(self, params: dict[str, Any]) -> None:
+        """Merge any usage updates emitted before turn completion."""
+        turn = params.get("turn", {}) or {}
+        usage = turn.get("usage", {}) or {}
+        if not usage:
+            return
+        self._replace_usage(
+            self._active_turn_id,
+            TokenUsageSnapshot(
+                input_tokens=int(usage.get("input_tokens", 0) or 0),
+                output_tokens=int(usage.get("output_tokens", 0) or 0),
+                cache_read_tokens=int(usage.get("cache_read_tokens", 0) or 0),
+                cache_write_tokens=int(usage.get("cache_write_tokens", 0) or 0),
+                context_window_tokens=self.config.context_window_tokens,
+            ),
+        )
+
+    def _handle_turn_completed(self, params: dict[str, Any]) -> None:
+        """Finalize the active turn from a completion notification."""
+        turn = params.get("turn", {}) or {}
+        usage = turn.get("usage", {}) or {}
+        status = str(turn.get("status", "completed") or "completed")
+        current_turn_id = self._active_turn_id
+        current_snapshot = self._last_turn if not current_turn_id else None
+        if not current_turn_id and current_snapshot is not None and current_snapshot.status == "timeout":
+            self._active_remote_turn_id = ""
+            self._item_text_buffers.clear()
+            return
+        final_status = "completed"
+        final_error = ""
+        if status in {"failed"}:
+            final_status = "failed"
+            final_error = self._extract_error_message(turn.get("error")) or "codex turn failed"
+        elif status in {"cancelled", "canceled", "aborted", "interrupted"}:
+            final_status = "aborted"
+            final_error = "codex turn aborted"
+        self._complete_turn(
+            self._active_turn_id,
+            status=final_status,
+            error=final_error,
+            session_id=self._thread_id,
+            usage=TokenUsageSnapshot(
+                input_tokens=int(usage.get("input_tokens", 0) or 0),
+                output_tokens=int(usage.get("output_tokens", 0) or 0),
+                cache_read_tokens=int(usage.get("cache_read_tokens", 0) or 0),
+                cache_write_tokens=int(usage.get("cache_write_tokens", 0) or 0),
+                context_window_tokens=self.config.context_window_tokens,
+            ),
+        )
+        self._active_turn_id = ""
+        self._active_remote_turn_id = ""
+        self._item_text_buffers.clear()
+
+    def _handle_turn_failed(self, params: dict[str, Any]) -> None:
+        """Finalize the active turn from an explicit failure notification."""
+        turn = params.get("turn", {}) or {}
+        self._complete_turn(
+            self._active_turn_id,
+            status="failed",
+            error=self._extract_error_message(turn.get("error")) or "codex turn failed",
+            session_id=self._thread_id,
+        )
+        self._active_turn_id = ""
+        self._active_remote_turn_id = ""
+        self._item_text_buffers.clear()
+
+    def _handle_item_notification(self, method: str, params: dict[str, Any]) -> None:
+        """Convert Codex item events into managed runtime events."""
         item = params.get("item", {}) or {}
-        item_type = item.get("type")
-        item_id = item.get("id", "")
-        if method == "item/started" and item_type == "commandExecution":
+        item_type = str(item.get("type", "") or "")
+        item_id = str(item.get("id", "") or "")
+
+        if item_type == "commandExecution":
+            self._handle_command_execution_item(method, item_id, item)
+            return
+        if item_type == "fileChange":
+            self._handle_file_change_item(method, item_id, item)
+            return
+        if item_type == "agentMessage":
+            self._handle_agent_message_item(method, item_id, item)
+            return
+        if item_type == "reasoning":
+            self._handle_reasoning_item(method, item_id, item)
+            return
+        if method == "item/completed":
+            self._record_event(
+                self._active_turn_id,
+                "log",
+                content=f"completed item type={item_type}",
+                call_id=item_id,
+                payload=dict(item),
+            )
+
+    def _handle_command_execution_item(self, method: str, item_id: str, item: dict[str, Any]) -> None:
+        """Map command execution items to tool_use/tool_result events."""
+        if method == "item/started":
             self._record_event(
                 self._active_turn_id,
                 "tool_use",
                 call_id=item_id,
                 tool_name="exec_command",
-                payload={"command": item.get("command", "")},
+                payload={
+                    "command": item.get("command", ""),
+                    "status": item.get("status", ""),
+                },
             )
-        elif method == "item/completed" and item_type == "commandExecution":
+        elif method == "item/updated":
+            stream = str(item.get("stream", "") or "")
+            delta = str(item.get("delta", "") or item.get("text", "") or "")
+            if delta:
+                self._record_event(
+                    self._active_turn_id,
+                    "log",
+                    call_id=item_id,
+                    content=delta,
+                    payload={"stream": stream, "item_type": "commandExecution"},
+                )
+        elif method == "item/completed":
+            content = item.get("aggregatedOutput", "")
+            if not isinstance(content, str):
+                content = json.dumps(content, ensure_ascii=True)
             self._record_event(
                 self._active_turn_id,
                 "tool_result",
                 call_id=item_id,
                 tool_name="exec_command",
-                content=item.get("aggregatedOutput", ""),
+                content=content,
             )
-        elif method == "item/started" and item_type == "fileChange":
-            self._record_event(self._active_turn_id, "tool_use", call_id=item_id, tool_name="patch_apply")
-        elif method == "item/completed" and item_type == "fileChange":
-            self._record_event(self._active_turn_id, "tool_result", call_id=item_id, tool_name="patch_apply")
-        elif method == "item/completed" and item_type == "agentMessage":
-            text = item.get("text", "")
+
+    def _handle_file_change_item(self, method: str, item_id: str, item: dict[str, Any]) -> None:
+        """Map file change items to patch-related tool events."""
+        if method == "item/started":
+            self._record_event(
+                self._active_turn_id,
+                "tool_use",
+                call_id=item_id,
+                tool_name="patch_apply",
+                payload={"status": item.get("status", "")},
+            )
+        elif method == "item/updated":
+            self._record_event(
+                self._active_turn_id,
+                "log",
+                call_id=item_id,
+                content=str(item.get("message", "") or ""),
+                payload={"item_type": "fileChange"},
+            )
+        elif method == "item/completed":
+            self._record_event(
+                self._active_turn_id,
+                "tool_result",
+                call_id=item_id,
+                tool_name="patch_apply",
+                content=str(item.get("summary", "") or ""),
+            )
+
+    def _handle_agent_message_item(self, method: str, item_id: str, item: dict[str, Any]) -> None:
+        """Map agent message items to text streaming and final output state."""
+        if method == "item/started":
+            self._item_text_buffers[item_id] = ""
+            return
+        if method == "item/updated":
+            delta = self._extract_agent_message_delta(item)
+            if delta:
+                self._item_text_buffers[item_id] = self._item_text_buffers.get(item_id, "") + delta
+                self._record_event(self._active_turn_id, "text", call_id=item_id, content=delta)
+                self._set_final_output(self._active_turn_id, self._item_text_buffers[item_id])
+            return
+        if method == "item/completed":
+            text = self._extract_agent_message_text(item)
             if text:
-                self._record_event(self._active_turn_id, "text", content=text)
+                buffered = self._item_text_buffers.get(item_id, "")
+                if text != buffered:
+                    suffix = text[len(buffered):] if text.startswith(buffered) else text
+                    if suffix:
+                        self._record_event(self._active_turn_id, "text", call_id=item_id, content=suffix)
                 self._set_final_output(self._active_turn_id, text)
+            self._item_text_buffers.pop(item_id, None)
+
+    def _handle_reasoning_item(self, method: str, item_id: str, item: dict[str, Any]) -> None:
+        """Map reasoning items to internal thinking events."""
+        if method == "item/updated":
+            delta = str(item.get("delta", "") or item.get("text", "") or "")
+            if delta:
+                self._record_event(self._active_turn_id, "thinking", call_id=item_id, content=delta)
+        elif method == "item/completed":
+            text = str(item.get("text", "") or "")
+            if text:
+                self._record_event(self._active_turn_id, "thinking", call_id=item_id, content=text)
+
+    def _extract_agent_message_delta(self, item: dict[str, Any]) -> str:
+        """Extract one streaming text delta from an agent message item."""
+        delta = item.get("delta")
+        if isinstance(delta, str):
+            return delta
+        text = item.get("text")
+        if isinstance(text, str):
+            return text
+        return ""
+
+    def _extract_agent_message_text(self, item: dict[str, Any]) -> str:
+        """Extract the full text body from a completed agent message item."""
+        text = item.get("text")
+        if isinstance(text, str):
+            return text
+        content = item.get("content")
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts: list[str] = []
+            for block in content:
+                if isinstance(block, dict):
+                    piece = block.get("text")
+                    if isinstance(piece, str):
+                        parts.append(piece)
+            return "".join(parts)
+        return ""
+
+    def _extract_thread_id(self, response: dict[str, Any]) -> str:
+        """Extract a thread identifier from a thread/start or thread/resume response."""
+        return str((((response or {}).get("thread")) or {}).get("id", "") or "")
+
+    def _extract_turn_id(self, response: dict[str, Any]) -> str:
+        """Extract a remote turn identifier from a turn/start response."""
+        return str((((response or {}).get("turn")) or {}).get("id", "") or "")
+
+    def _extract_error_message(self, error: Any) -> str:
+        """Extract a stable error string from a protocol error payload."""
+        if isinstance(error, dict):
+            return str(error.get("message", "") or json.dumps(error, ensure_ascii=True))
+        if error is None:
+            return ""
+        return str(error)
 
     def _cancel_active_turn(self, reason: str, status: str) -> None:
-        """Terminate the active Codex turn and finalize it with the given status."""
+        """Interrupt the active Codex turn when possible and finalize local state."""
         active_turn_id = self._active_turn_id
-        process = self._process
-        if process and process.stdin is not None and not process.stdin.closed:
-            process.stdin.close()
-        if process and process.poll() is None:
-            process.kill()
+        remote_turn_id = self._active_remote_turn_id
+        if not active_turn_id and self._last_turn is not None and self._last_turn.status == "timeout":
+            self._active_remote_turn_id = ""
+            self._item_text_buffers.clear()
+            return
+        if remote_turn_id and self._thread_id and self._process is not None and self._process.poll() is None:
+            try:
+                self._rpc_request(
+                    "turn/interrupt",
+                    {"threadId": self._thread_id, "turnId": remote_turn_id},
+                    timeout=min(5.0, self.config.startup_timeout_seconds),
+                )
+            except Exception:
+                pass
+
         if active_turn_id:
             self._complete_turn(active_turn_id, status=status, error=reason, session_id=self._thread_id)
             self._active_turn_id = ""
+            self._active_remote_turn_id = ""
+            self._item_text_buffers.clear()
 
     def _shutdown_impl(self) -> None:
         """Shut down Codex process resources and join helper threads."""
@@ -284,3 +537,24 @@ class CodexRuntime(ManagedAgentRuntime):
             self._reader_thread.join(timeout=1.0)
         if self._stderr_thread is not None:
             self._stderr_thread.join(timeout=1.0)
+        self._process = None
+
+    def _config_override_args(self) -> list[str]:
+        """Build ``codex -c`` overrides from reused model-provider config."""
+        args: list[str] = []
+        reused_skills = self.config.runtime_options.get("reused_skills")
+        if isinstance(reused_skills, list) and reused_skills:
+            args.extend(["-c", f"skills.config={json.dumps(reused_skills, ensure_ascii=True)}"])
+
+        reused_mcp = self.config.runtime_options.get("reused_mcp")
+        if isinstance(reused_mcp, dict) and reused_mcp:
+            args.extend(["-c", f"mcp_servers={json.dumps(reused_mcp, ensure_ascii=True)}"])
+
+        reused_model_provider = self.config.runtime_options.get("reused_model_provider")
+        if reused_model_provider:
+            args.extend(["-c", f"model_provider={json.dumps(str(reused_model_provider), ensure_ascii=True)}"])
+
+        reused_reasoning_effort = self.config.runtime_options.get("reused_model_reasoning_effort")
+        if reused_reasoning_effort:
+            args.extend(["-c", f"model_reasoning_effort={json.dumps(str(reused_reasoning_effort), ensure_ascii=True)}"])
+        return args

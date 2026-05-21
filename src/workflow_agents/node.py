@@ -15,11 +15,16 @@ def default_prompt_builder(
     messages: Sequence[InterNodeMessage],
     state: Mapping[str, Any],
 ) -> str:
-    """Build the default prompt passed from node mailboxes into an agent runtime."""
+    """Build the default node-orchestration prompt passed into an agent runtime."""
     lines = [
         f"Node: {config.name}",
-        "Process only the external messages below. Internal tool execution details must stay internal.",
+        "You are operating as a workflow node inside a multi-agent graph.",
+        "Process only the external node-to-node messages below.",
+        "Your final answer will be sent as the message body to downstream nodes.",
+        "Do not include internal tool execution details unless explicitly asked.",
     ]
+    if config.targets:
+        lines.append(f"Allowed downstream recipients: {', '.join(config.targets)}")
     if config.prompt_prefix:
         lines.append(config.prompt_prefix)
     if not messages:
@@ -62,10 +67,11 @@ class AgentNode:
             return {"agent_results": {self.config.name: {"status": "idle", "skipped": True}}}
 
         runtime = self.get_runtime()
-        runtime.workspace.append_jsonl(
-            runtime.workspace.inbox_path,
-            {"messages": [message.to_dict() for message in inbound]},
-        )
+        if self.config.persist_node_mailboxes:
+            runtime.workspace.append_jsonl(
+                runtime.workspace.inbox_path,
+                {"messages": [message.to_dict() for message in inbound]},
+            )
         prompt = self.prompt_builder(self.config, inbound, state)
         result = runtime.run_turn(prompt, timeout=self.config.turn_timeout_seconds)
 
@@ -81,7 +87,7 @@ class AgentNode:
         ]
         for message in outbound:
             mailbox_state.setdefault(message.recipient, []).append(message.to_dict())
-        if outbound:
+        if outbound and self.config.persist_node_mailboxes:
             runtime.workspace.append_jsonl(
                 runtime.workspace.outbox_path,
                 {"messages": [message.to_dict() for message in outbound]},

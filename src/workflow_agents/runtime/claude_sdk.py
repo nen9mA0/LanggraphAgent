@@ -54,6 +54,12 @@ class ClaudeSDKRuntime(ManagedAgentRuntime):
 
     def _worker_config_payload(self) -> str:
         """Build the JSON configuration payload passed to the SDK bridge worker."""
+        env_payload = dict(self.config.env)
+        if not str(env_payload.get("CLAUDE_CONFIG_DIR", "") or "").strip():
+            config_dir = self._prepare_reused_config_dir()
+            if config_dir is not None:
+                env_payload["CLAUDE_CONFIG_DIR"] = str(config_dir)
+        mcp_config_path = self._prepare_reused_mcp_config()
         payload = {
             "working_directory": str(self.config.normalized_working_directory()),
             "system_prompt": self.config.system_prompt,
@@ -62,6 +68,8 @@ class ClaudeSDKRuntime(ManagedAgentRuntime):
             "cli_path": self.config.runtime_options.get("cli_path"),
             "session_id": self.session_id or None,
             "client_options": dict(self.config.runtime_options.get("client_options") or {}),
+            "env": env_payload,
+            "mcp_config_path": str(mcp_config_path) if mcp_config_path is not None else None,
         }
         return json.dumps(payload, ensure_ascii=True)
 
@@ -342,3 +350,63 @@ class ClaudeSDKRuntime(ManagedAgentRuntime):
         if self._stderr_thread is not None:
             self._stderr_thread.join(timeout=1.0)
         self._process = None
+
+    def _prepare_reused_config_dir(self) -> Path | None:
+        """Prepare the Claude user-config overlay directory when local reused config exists."""
+        config_dir = self.workspace.root / ".claude"
+        has_local_settings = config_dir.joinpath("settings.json").exists() or config_dir.joinpath("settings.local.json").exists()
+        has_reused_skills = self._sync_reused_skills(config_dir)
+        if has_local_settings or has_reused_skills:
+            config_dir.mkdir(parents=True, exist_ok=True)
+            return config_dir
+        return None
+
+    def _sync_reused_skills(self, config_dir: Path) -> bool:
+        """Copy reused skill directories into the Claude config overlay."""
+        reused_skills = list(self.config.runtime_options.get("reused_skills") or [])
+        if not reused_skills:
+            return False
+
+        skills_root = config_dir / "skills"
+        copied_any = False
+        for item in reused_skills:
+            source_dir = self._resolve_reused_skill_directory(str(item))
+            if source_dir is None:
+                continue
+            target_dir = skills_root / source_dir.name
+            target_dir.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(source_dir, target_dir, dirs_exist_ok=True)
+            copied_any = True
+        return copied_any
+
+    def _resolve_reused_skill_directory(self, value: str) -> Path | None:
+        """Resolve a reused skill selector into a concrete skill directory."""
+        raw = value.strip()
+        if not raw:
+            return None
+
+        candidates: list[Path] = []
+        direct = Path(raw).expanduser()
+        candidates.append(direct)
+        if not direct.is_absolute():
+            candidates.append(self.config.normalized_working_directory() / raw)
+            candidates.append(Path.home() / ".claude" / "skills" / raw)
+
+        for candidate in candidates:
+            resolved = candidate.resolve(strict=False)
+            if resolved.is_file() and resolved.name == "SKILL.md":
+                return resolved.parent if resolved.exists() else None
+            if resolved.is_dir() and resolved.joinpath("SKILL.md").exists():
+                return resolved
+        return None
+
+    def _prepare_reused_mcp_config(self) -> Path | None:
+        """Materialize the reused Claude MCP payload into a temporary JSON config file."""
+        reused_mcp = self.config.runtime_options.get("reused_mcp") or {}
+        if not isinstance(reused_mcp, dict) or not reused_mcp:
+            return None
+
+        config_path = self.workspace.root / "reused_mcp.json"
+        payload = {"mcpServers": reused_mcp}
+        config_path.write_text(json.dumps(payload, ensure_ascii=True, indent=2) + "\n", encoding="utf-8")
+        return config_path

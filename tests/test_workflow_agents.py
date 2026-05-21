@@ -76,6 +76,7 @@ import sys
 
 thread_id = "codex-thread-1"
 turn_index = 0
+waiting_interrupt = False
 
 def reply(message):
     print(json.dumps(message), flush=True)
@@ -101,6 +102,31 @@ for raw in sys.stdin:
         reply({"jsonrpc": "2.0", "method": "turn/started", "params": {"threadId": thread_id, "turn": {"id": turn_id}}})
         reply({
             "jsonrpc": "2.0",
+            "method": "turn/updated",
+            "params": {
+                "threadId": thread_id,
+                "turn": {"id": turn_id, "status": "running", "usage": {"input_tokens": 1, "output_tokens": 2}},
+            },
+        })
+        reply({
+            "jsonrpc": "2.0",
+            "id": 9001,
+            "method": "commandExecution/requestApproval",
+            "params": {"command": "echo hidden", "reason": "test"},
+        })
+        reply({
+            "jsonrpc": "2.0",
+            "id": 9002,
+            "method": "tool/requestInput",
+            "params": {"toolName": "prompt_user"},
+        })
+        reply({
+            "jsonrpc": "2.0",
+            "method": "item/updated",
+            "params": {"threadId": thread_id, "item": {"id": "reason-1", "type": "reasoning", "delta": "thinking..."}},
+        })
+        reply({
+            "jsonrpc": "2.0",
             "method": "item/started",
             "params": {
                 "threadId": thread_id,
@@ -117,6 +143,25 @@ for raw in sys.stdin:
         })
         reply({
             "jsonrpc": "2.0",
+            "method": "item/started",
+            "params": {
+                "threadId": thread_id,
+                "item": {"id": "msg-1", "type": "agentMessage"},
+            },
+        })
+        reply({
+            "jsonrpc": "2.0",
+            "method": "item/updated",
+            "params": {
+                "threadId": thread_id,
+                "item": {"id": "msg-1", "type": "agentMessage", "delta": f"stream:{prompt}"},
+            },
+        })
+        if "interrupt me" in prompt:
+            waiting_interrupt = True
+            continue
+        reply({
+            "jsonrpc": "2.0",
             "method": "item/completed",
             "params": {
                 "threadId": thread_id,
@@ -131,6 +176,65 @@ for raw in sys.stdin:
                 "turn": {"id": turn_id, "status": "completed", "usage": {"input_tokens": 3, "output_tokens": 7}},
             },
         })
+    elif "id" in payload and method == "turn/interrupt":
+        reply({"jsonrpc": "2.0", "id": payload["id"], "result": {"status": "ok"}})
+        if waiting_interrupt:
+            waiting_interrupt = False
+            reply({
+                "jsonrpc": "2.0",
+                "method": "turn/completed",
+                "params": {
+                    "threadId": thread_id,
+                    "turn": {"id": payload["params"]["turnId"], "status": "interrupted", "usage": {"input_tokens": 4, "output_tokens": 4}},
+                },
+            })
+    elif "id" in payload and payload["id"] in {9001, 9002}:
+        continue
+    elif "id" in payload:
+        reply({"jsonrpc": "2.0", "id": payload["id"], "result": {}})
+"""
+
+FAKE_CODEX_SERVER_REQUESTS = """
+import json
+import sys
+
+thread_id = "codex-thread-requests"
+turn_id = "turn-1"
+
+def reply(message):
+    print(json.dumps(message), flush=True)
+
+for raw in sys.stdin:
+    payload = json.loads(raw)
+    method = payload.get("method")
+    if "id" in payload and method == "initialize":
+        reply({"jsonrpc": "2.0", "id": payload["id"], "result": {}})
+    elif method == "initialized":
+        continue
+    elif "id" in payload and method in {"thread/start", "thread/resume"}:
+        reply({"jsonrpc": "2.0", "id": payload["id"], "result": {"thread": {"id": thread_id}}})
+    elif "id" in payload and method == "turn/start":
+        reply({"jsonrpc": "2.0", "id": payload["id"], "result": {"turn": {"id": turn_id}}})
+        reply({"jsonrpc": "2.0", "method": "turn/started", "params": {"threadId": thread_id, "turn": {"id": turn_id}}})
+        reply({"jsonrpc": "2.0", "id": 9010, "method": "item/tool/requestUserInput", "params": {"schema": {"type": "object"}}})
+        reply({
+            "jsonrpc": "2.0",
+            "method": "item/completed",
+            "params": {
+                "threadId": thread_id,
+                "item": {"id": "msg-1", "type": "agentMessage", "text": "final:request-path", "phase": "final_answer"},
+            },
+        })
+        reply({
+            "jsonrpc": "2.0",
+            "method": "turn/completed",
+            "params": {
+                "threadId": thread_id,
+                "turn": {"id": turn_id, "status": "completed", "usage": {"input_tokens": 3, "output_tokens": 7}},
+            },
+        })
+    elif "id" in payload and payload["id"] == 9010:
+        continue
     elif "id" in payload:
         reply({"jsonrpc": "2.0", "id": payload["id"], "result": {}})
 """
@@ -265,6 +369,7 @@ class WorkflowAgentsTestCase(unittest.TestCase):
             second = runtime.run_turn("world")
             self.assertEqual(second.session_id, "claude-session-1")
             self.assertEqual(second.final_output, "final:world")
+            self.assertFalse(runtime.workspace.history_path.exists())
             runtime.shutdown()
 
     def test_claude_sdk_runtime_exposes_usage_completion_and_persists_session(self) -> None:
@@ -312,21 +417,66 @@ class WorkflowAgentsTestCase(unittest.TestCase):
             )
 
             runtime = registry.get_or_create(config)
-            first = runtime.run_turn("task one")
-            self.assertEqual(first.status, "completed")
-            self.assertEqual(first.final_output, "final:task one")
-            self.assertEqual(first.session_id, "codex-thread-1")
-            self.assertAlmostEqual(runtime.get_context_usage_ratio() or 0.0, 0.1)
+            try:
+                first = runtime.run_turn("task one")
+                self.assertEqual(first.status, "completed")
+                self.assertEqual(first.final_output, "final:task one")
+                self.assertEqual(first.session_id, "codex-thread-1")
+                self.assertAlmostEqual(runtime.get_context_usage_ratio() or 0.0, 0.1)
 
-            events = runtime.get_output_events()
-            event_types = [event.event_type for event in events]
-            self.assertIn("tool_use", event_types)
-            self.assertIn("tool_result", event_types)
+                events = runtime.get_output_events()
+                event_types = [event.event_type for event in events]
+                self.assertIn("tool_use", event_types)
+                self.assertIn("tool_result", event_types)
+                self.assertIn("thinking", event_types)
+                self.assertGreaterEqual(event_types.count("text"), 1)
 
-            second = runtime.run_turn("task two")
-            self.assertEqual(second.session_id, "codex-thread-1")
-            self.assertEqual(second.final_output, "final:task two")
-            runtime.shutdown()
+                second = runtime.run_turn("task two")
+                self.assertEqual(second.session_id, "codex-thread-1")
+                self.assertEqual(second.final_output, "final:task two")
+            finally:
+                registry.shutdown_all()
+
+    def test_codex_runtime_interrupts_active_turn_via_turn_interrupt(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            fake_codex = create_cmd_wrapper(Path(temp_dir), "fake_codex_interrupt", FAKE_CODEX)
+            registry = AgentRuntimeRegistry(base_directory=Path(temp_dir) / ".workflow" / "agent")
+            config = AgentNodeConfig(
+                name="codex_interrupt_worker",
+                agent_type="codex",
+                executable_path=fake_codex,
+                working_directory=temp_dir,
+                context_window_tokens=100,
+                turn_timeout_seconds=0.1,
+            )
+
+            runtime = registry.get_or_create(config)
+            try:
+                result = runtime.run_turn("interrupt me")
+                self.assertEqual(result.status, "timeout")
+                self.assertEqual(result.session_id, "codex-thread-1")
+            finally:
+                registry.shutdown_all()
+
+    def test_codex_runtime_handles_server_request_user_input(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            fake_codex = create_cmd_wrapper(Path(temp_dir), "fake_codex_requests", FAKE_CODEX_SERVER_REQUESTS)
+            registry = AgentRuntimeRegistry(base_directory=Path(temp_dir) / ".workflow" / "agent")
+            config = AgentNodeConfig(
+                name="codex_request_worker",
+                agent_type="codex",
+                executable_path=fake_codex,
+                working_directory=temp_dir,
+                context_window_tokens=100,
+            )
+
+            runtime = registry.get_or_create(config)
+            try:
+                result = runtime.run_turn("request path")
+                self.assertEqual(result.status, "completed")
+                self.assertEqual(result.final_output, "final:request-path")
+            finally:
+                registry.shutdown_all()
 
     def test_agent_node_only_forwards_final_output_to_other_nodes(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -360,9 +510,66 @@ class WorkflowAgentsTestCase(unittest.TestCase):
                 self.assertEqual(result["mailboxes"].get("writer"), [])
 
                 workspace = Path(writer_result["workspace"])
-                history_lines = workspace.joinpath("history.jsonl").read_text(encoding="utf-8").strip().splitlines()
-                self.assertTrue(any('"kind": "event"' in line for line in history_lines))
+                self.assertFalse(workspace.joinpath("history.jsonl").exists())
+                inbox_lines = workspace.joinpath("inbox.jsonl").read_text(encoding="utf-8").strip().splitlines()
+                self.assertTrue(inbox_lines)
                 self.assertNotIn("echo hidden", forwarded["content"])
+            finally:
+                registry.shutdown_all()
+
+    def test_runtime_history_is_only_persisted_when_enabled(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            fake_claude = create_cmd_wrapper(Path(temp_dir), "fake_claude_history", FAKE_CLAUDE)
+            registry = AgentRuntimeRegistry(base_directory=Path(temp_dir) / ".workflow" / "agent")
+            config = AgentNodeConfig(
+                name="claude_history_writer",
+                agent_type="claude",
+                executable_path=fake_claude,
+                working_directory=temp_dir,
+                context_window_tokens=100,
+                persist_runtime_history=True,
+            )
+
+            runtime = registry.get_or_create(config)
+            try:
+                result = runtime.run_turn("history please")
+                self.assertEqual(result.status, "completed")
+                self.assertTrue(runtime.workspace.history_path.exists())
+                history_lines = runtime.workspace.history_path.read_text(encoding="utf-8").strip().splitlines()
+                self.assertTrue(any('"kind": "turn_started"' in line for line in history_lines))
+                self.assertTrue(any('"kind": "event"' in line for line in history_lines))
+                self.assertTrue(any('"kind": "turn_completed"' in line for line in history_lines))
+            finally:
+                registry.shutdown_all()
+
+    def test_node_mailbox_persistence_can_be_disabled(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            fake_claude = create_cmd_wrapper(Path(temp_dir), "fake_claude_mailbox_off", FAKE_CLAUDE)
+            registry = AgentRuntimeRegistry(base_directory=Path(temp_dir) / ".workflow" / "agent")
+            try:
+                node = AgentNode(
+                    config=AgentNodeConfig(
+                        name="writer",
+                        agent_type="claude",
+                        executable_path=fake_claude,
+                        working_directory=temp_dir,
+                        targets=("reviewer",),
+                        persist_node_mailboxes=False,
+                    ),
+                    registry=registry,
+                )
+
+                state = {
+                    "mailboxes": {
+                        "writer": [
+                            InterNodeMessage(sender="planner", recipient="writer", content="Draft section B").to_dict()
+                        ]
+                    }
+                }
+                result = node(state)
+                workspace = Path(result["agent_results"]["writer"]["workspace"])
+                self.assertFalse(workspace.joinpath("inbox.jsonl").exists())
+                self.assertFalse(workspace.joinpath("outbox.jsonl").exists())
             finally:
                 registry.shutdown_all()
 
@@ -416,6 +623,386 @@ class WorkflowAgentsTestCase(unittest.TestCase):
             self.assertEqual(config.runtime_options["sdk_module"], "claude_agent_sdk")
             self.assertEqual(config.runtime_options["cli_path"], "C:/tools/claude.cmd")
             self.assertEqual(config.runtime_options["client_options"]["permission_mode"], "bypassPermissions")
+
+    def test_build_reused_agent_config_reads_minimal_claude_model(self) -> None:
+        from workflow_agents.config_reuse import build_reused_agent_config
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / ".claude").mkdir(parents=True, exist_ok=True)
+            (root / ".claude" / "settings.json").write_text(
+                json.dumps({"model": "claude-sonnet", "skills": ["skill-a"], "mcp": {"server": "x"}, "unused": {"x": 1}}, ensure_ascii=True),
+                encoding="utf-8",
+            )
+
+            reused = build_reused_agent_config(agent_type="claude", working_directory=root, home_directory=root / "home")
+            self.assertEqual(reused.model, "claude-sonnet")
+            self.assertEqual(reused.runtime_options, {})
+            self.assertEqual(reused.skills, [])
+            self.assertEqual(reused.mcp, {})
+            self.assertEqual(reused.metadata["source_kind"], "claude_settings")
+
+    def test_build_reused_agent_config_reads_minimal_codex_model(self) -> None:
+        from workflow_agents.config_reuse import build_reused_agent_config
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / ".codex").mkdir(parents=True, exist_ok=True)
+            (root / ".codex" / "config.toml").write_text(
+                'model = "gpt-5-codex"\nmodel_provider = "openai"\nmodel_reasoning_effort = "high"\n',
+                encoding="utf-8",
+            )
+
+            reused = build_reused_agent_config(agent_type="codex", working_directory=root, home_directory=root / "home")
+            self.assertEqual(reused.model, "gpt-5-codex")
+            self.assertEqual(reused.runtime_options["reused_model_provider"], "openai")
+            self.assertEqual(reused.runtime_options["reused_model_reasoning_effort"], "high")
+            self.assertEqual(reused.metadata["source_kind"], "codex_config_toml")
+
+    def test_build_reused_agent_config_can_whitelist_skills_and_mcp(self) -> None:
+        from workflow_agents.config_reuse import build_reused_agent_config
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / ".claude").mkdir(parents=True, exist_ok=True)
+            (root / ".claude" / "settings.json").write_text(
+                json.dumps({"model": "claude-sonnet", "skills": ["skill-a", "skill-b"], "mcp": {"server": "x"}}, ensure_ascii=True),
+                encoding="utf-8",
+            )
+
+            reused = build_reused_agent_config(
+                agent_type="claude",
+                working_directory=root,
+                home_directory=root / "home",
+                reuse_fields=("model", "skills", "mcp"),
+            )
+            self.assertEqual(reused.model, "claude-sonnet")
+            self.assertEqual(reused.skills, ["skill-a", "skill-b"])
+            self.assertEqual(reused.mcp, {"server": "x"})
+
+    def test_agent_node_config_from_provider_defaults_reuses_model(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / ".claude").mkdir(parents=True, exist_ok=True)
+            (root / ".claude" / "settings.json").write_text(
+                json.dumps({"model": "claude-default"}, ensure_ascii=True),
+                encoding="utf-8",
+            )
+
+            config = AgentNodeConfig.from_provider_defaults(
+                name="writer",
+                agent_type="claude",
+                working_directory=root,
+                executable_path="claude",
+                home_directory=root / "home",
+            )
+            self.assertEqual(config.model, "claude-default")
+            self.assertNotIn("reused_skills", config.runtime_options)
+            self.assertNotIn("reused_mcp", config.runtime_options)
+
+    def test_agent_node_config_from_provider_defaults_can_enable_skills_and_mcp_reuse(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / ".claude").mkdir(parents=True, exist_ok=True)
+            (root / ".claude" / "settings.json").write_text(
+                json.dumps({"model": "claude-default", "skills": ["skill-a"], "mcp": {"server": "x"}}, ensure_ascii=True),
+                encoding="utf-8",
+            )
+
+            config = AgentNodeConfig.from_provider_defaults(
+                name="writer",
+                agent_type="claude",
+                working_directory=root,
+                executable_path="claude",
+                home_directory=root / "home",
+                reuse_fields=("model", "skills", "mcp"),
+            )
+            self.assertEqual(config.model, "claude-default")
+            self.assertEqual(config.runtime_options["reused_skills"], ["skill-a"])
+            self.assertEqual(config.runtime_options["reused_mcp"], {"server": "x"})
+
+    def test_agent_node_config_from_provider_defaults_allows_explicit_override(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / ".codex").mkdir(parents=True, exist_ok=True)
+            (root / ".codex" / "config.toml").write_text(
+                'model = "gpt-5-codex"\nmodel_provider = "openai"\n',
+                encoding="utf-8",
+            )
+
+            config = AgentNodeConfig.from_provider_defaults(
+                name="reviewer",
+                agent_type="codex",
+                working_directory=root,
+                executable_path="codex",
+                model="custom-model",
+                runtime_options={"reused_model_provider": "custom-provider", "x": 1},
+                home_directory=root / "home",
+            )
+            self.assertEqual(config.model, "custom-model")
+            self.assertEqual(config.runtime_options["reused_model_provider"], "custom-provider")
+            self.assertEqual(config.runtime_options["x"], 1)
+
+    def test_materialize_reused_agent_config_writes_minimal_claude_snapshot(self) -> None:
+        from workflow_agents.config_reuse import materialize_reused_agent_config
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source_root = root / "project"
+            target_root = root / "agent" / "claude_writer"
+            (source_root / ".claude").mkdir(parents=True, exist_ok=True)
+            (source_root / ".claude" / "settings.json").write_text(
+                json.dumps({"model": "claude-opus", "unused": {"x": 1}}, ensure_ascii=True),
+                encoding="utf-8",
+            )
+
+            snapshot = materialize_reused_agent_config(
+                agent_type="claude",
+                source_working_directory=source_root,
+                target_directory=target_root,
+            )
+            config_path = target_root / ".claude" / "settings.json"
+            self.assertEqual(snapshot.agent_type, "claude")
+            self.assertEqual(snapshot.written_files, [config_path.resolve()])
+            self.assertEqual(json.loads(config_path.read_text(encoding="utf-8")), {"model": "claude-opus"})
+
+    def test_materialize_reused_agent_config_writes_minimal_codex_snapshot(self) -> None:
+        from workflow_agents.config_reuse import materialize_reused_agent_config
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source_root = root / "project"
+            target_root = root / "agent" / "codex_reviewer"
+            (source_root / ".codex").mkdir(parents=True, exist_ok=True)
+            (source_root / ".codex" / "config.toml").write_text(
+                'model = "gpt-5-codex"\nmodel_provider = "openai"\nmodel_reasoning_effort = "high"\n',
+                encoding="utf-8",
+            )
+
+            snapshot = materialize_reused_agent_config(
+                agent_type="codex",
+                source_working_directory=source_root,
+                target_directory=target_root,
+            )
+            config_path = target_root / ".codex" / "config.toml"
+            self.assertEqual(snapshot.agent_type, "codex")
+            self.assertEqual(snapshot.written_files, [config_path.resolve()])
+            content = config_path.read_text(encoding="utf-8")
+            self.assertIn('model = "gpt-5-codex"', content)
+            self.assertIn('model_provider = "openai"', content)
+            self.assertIn('model_reasoning_effort = "high"', content)
+
+    def test_materialize_reused_agent_config_can_ignore_home_defaults(self) -> None:
+        from workflow_agents.config_reuse import materialize_reused_agent_config
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source_root = root / "project"
+            target_root = root / "agent" / "codex_reviewer"
+            home_root = root / "home"
+            (home_root / ".codex").mkdir(parents=True, exist_ok=True)
+            (home_root / ".codex" / "config.toml").write_text('model = "gpt-5.4"\n', encoding="utf-8")
+            (source_root / ".codex").mkdir(parents=True, exist_ok=True)
+            (source_root / ".codex" / "config.toml").write_text('model = "gpt-5-codex"\n', encoding="utf-8")
+
+            snapshot = materialize_reused_agent_config(
+                agent_type="codex",
+                source_working_directory=source_root,
+                target_directory=target_root,
+                home_directory=home_root,
+                include_home_defaults=False,
+            )
+            content = target_root.joinpath(".codex", "config.toml").read_text(encoding="utf-8")
+            self.assertEqual(snapshot.agent_type, "codex")
+            self.assertIn('model = "gpt-5-codex"', content)
+            self.assertNotIn('model = "gpt-5.4"', content)
+
+    def test_claude_runtime_prepares_reused_skills_and_mcp_artifacts(self) -> None:
+        from workflow_agents.runtime.claude import ClaudeCodeRuntime
+        from workflow_agents.storage import AgentWorkspace
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            skill_dir = root / "skills" / "writer_skill"
+            skill_dir.mkdir(parents=True, exist_ok=True)
+            skill_dir.joinpath("SKILL.md").write_text("# writer skill\n", encoding="utf-8")
+            workspace = AgentWorkspace(node_name="writer", folder_name="writer", root=root / ".workflow" / "agent" / "writer")
+            workspace.ensure()
+            config = AgentNodeConfig(
+                name="writer",
+                folder_name="writer",
+                agent_type="claude",
+                executable_path="claude",
+                working_directory=temp_dir,
+                auto_start=False,
+                runtime_options={
+                    "reused_skills": [str(skill_dir)],
+                    "reused_mcp": {"demo": {"command": "demo-mcp", "args": ["--stdio"]}},
+                },
+            )
+
+            runtime = ClaudeCodeRuntime(config, workspace)
+            config_dir = runtime._prepare_reused_config_dir()
+            mcp_path = runtime._prepare_reused_mcp_config()
+
+            self.assertIsNotNone(config_dir)
+            self.assertTrue(config_dir.joinpath("skills", "writer_skill", "SKILL.md").exists())
+            self.assertIsNotNone(mcp_path)
+            self.assertEqual(
+                json.loads(mcp_path.read_text(encoding="utf-8")),
+                {"mcpServers": {"demo": {"command": "demo-mcp", "args": ["--stdio"]}}},
+            )
+            args = runtime._build_args()
+            self.assertIn("--mcp-config", args)
+            self.assertIn(str(mcp_path), args)
+
+    def test_codex_runtime_builds_config_override_args_for_reused_skills_and_mcp(self) -> None:
+        from workflow_agents.runtime.codex import CodexRuntime
+        from workflow_agents.storage import AgentWorkspace
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            workspace = AgentWorkspace(node_name="reviewer", folder_name="reviewer", root=root / ".workflow" / "agent" / "reviewer")
+            workspace.ensure()
+            config = AgentNodeConfig(
+                name="reviewer",
+                folder_name="reviewer",
+                agent_type="codex",
+                executable_path="codex",
+                working_directory=temp_dir,
+                auto_start=False,
+                runtime_options={
+                    "reused_skills": ["skill-a", "skill-b"],
+                    "reused_mcp": {"demo": {"command": "demo-mcp", "args": ["--stdio"]}},
+                    "reused_model_provider": "openai",
+                    "reused_model_reasoning_effort": "high",
+                },
+            )
+
+            runtime = CodexRuntime(config, workspace)
+            args = runtime._config_override_args()
+            joined = " ".join(args)
+            self.assertIn("skills.config=", joined)
+            self.assertIn("mcp_servers=", joined)
+            self.assertIn("model_provider=", joined)
+            self.assertIn("model_reasoning_effort=", joined)
+            self.assertIn('"skill-a"', joined)
+            self.assertIn('"demo"', joined)
+
+    def test_claude_sdk_worker_config_includes_mcp_and_env(self) -> None:
+        from workflow_agents.runtime.claude_sdk import ClaudeSDKRuntime
+        from workflow_agents.storage import AgentWorkspace
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            skill_dir = root / "skills" / "writer_skill"
+            skill_dir.mkdir(parents=True, exist_ok=True)
+            skill_dir.joinpath("SKILL.md").write_text("# writer skill\n", encoding="utf-8")
+            workspace = AgentWorkspace(
+                node_name="writer_sdk",
+                folder_name="writer_sdk",
+                root=root / ".workflow" / "agent" / "writer_sdk",
+            )
+            workspace.ensure()
+            config = AgentNodeConfig(
+                name="writer_sdk",
+                folder_name="writer_sdk",
+                agent_type="claude_sdk",
+                executable_path=sys.executable,
+                working_directory=temp_dir,
+                auto_start=False,
+                env={"EXTRA_ENV": "1"},
+                runtime_options={
+                    "python_executable": sys.executable,
+                    "reused_skills": [str(skill_dir)],
+                    "reused_mcp": {"demo": {"command": "demo-mcp"}},
+                },
+            )
+
+            runtime = ClaudeSDKRuntime(config, workspace)
+            payload = json.loads(runtime._worker_config_payload())
+            self.assertEqual(payload["env"]["EXTRA_ENV"], "1")
+            self.assertTrue(payload["env"]["CLAUDE_CONFIG_DIR"])
+            self.assertTrue(payload["mcp_config_path"])
+            self.assertTrue(Path(payload["mcp_config_path"]).exists())
+            self.assertTrue(Path(payload["env"]["CLAUDE_CONFIG_DIR"]).joinpath("skills", "writer_skill", "SKILL.md").exists())
+
+    def test_agent_node_config_from_provider_defaults_prefers_local_snapshot_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            project_root = root / "project"
+            provider_root = root / "agent" / "claude_writer"
+            (project_root / ".claude").mkdir(parents=True, exist_ok=True)
+            (project_root / ".claude" / "settings.json").write_text(
+                json.dumps({"model": "claude-project-default"}, ensure_ascii=True),
+                encoding="utf-8",
+            )
+            (provider_root / ".claude").mkdir(parents=True, exist_ok=True)
+            (provider_root / ".claude" / "settings.json").write_text(
+                json.dumps({"model": "claude-local-snapshot"}, ensure_ascii=True),
+                encoding="utf-8",
+            )
+
+            config = AgentNodeConfig.from_provider_defaults(
+                name="writer",
+                agent_type="claude",
+                working_directory=project_root,
+                provider_config_directory=provider_root,
+                executable_path="claude",
+            )
+            self.assertEqual(config.model, "claude-local-snapshot")
+
+    def test_real_demo_config_reuses_provider_model_settings(self) -> None:
+        from workflow_agents.examples.real_agent_demo import (
+            _build_reviewer_config,
+            _build_writer_config,
+            ensure_demo_agent_directories,
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            ensure_demo_agent_directories(temp_dir)
+            (root / ".claude").mkdir(parents=True, exist_ok=True)
+            (root / ".claude" / "settings.json").write_text(
+                json.dumps({"model": "claude-opus"}, ensure_ascii=True),
+                encoding="utf-8",
+            )
+            (root / ".codex").mkdir(parents=True, exist_ok=True)
+            (root / ".codex" / "config.toml").write_text('model = "gpt-5-codex"\n', encoding="utf-8")
+            sdk_root = root / ".workflow" / "agent" / "claude_sdk_writer"
+            sdk_root.joinpath("python_executable.txt").write_text(sys.executable + "\n", encoding="utf-8")
+
+            writer_config = _build_writer_config(working_directory=temp_dir, claude_backend="claude")
+            reviewer_config = _build_reviewer_config(working_directory=temp_dir)
+            sdk_writer_config = _build_writer_config(working_directory=temp_dir, claude_backend="claude_sdk")
+
+            self.assertEqual(writer_config.model, "claude-opus")
+            self.assertEqual(sdk_writer_config.model, "claude-opus")
+            self.assertEqual(reviewer_config.model, "gpt-5-codex")
+
+    def test_real_demo_prepare_materializes_local_provider_snapshots(self) -> None:
+        from workflow_agents.examples.real_agent_demo import ensure_demo_agent_directories
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / ".claude").mkdir(parents=True, exist_ok=True)
+            (root / ".claude" / "settings.json").write_text(
+                json.dumps({"model": "claude-opus"}, ensure_ascii=True),
+                encoding="utf-8",
+            )
+            (root / ".codex").mkdir(parents=True, exist_ok=True)
+            (root / ".codex" / "config.toml").write_text('model = "gpt-5-codex"\n', encoding="utf-8")
+
+            folders = ensure_demo_agent_directories(temp_dir)
+            self.assertEqual(
+                json.loads(folders["claude"].joinpath(".claude", "settings.json").read_text(encoding="utf-8")),
+                {"model": "claude-opus"},
+            )
+            self.assertEqual(
+                json.loads(folders["claude_sdk"].joinpath(".claude", "settings.json").read_text(encoding="utf-8")),
+                {"model": "claude-opus"},
+            )
+            self.assertIn('model = "gpt-5-codex"', folders["codex"].joinpath(".codex", "config.toml").read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

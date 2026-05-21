@@ -290,6 +290,9 @@ def _build_options(payload: dict[str, Any]) -> dict[str, Any]:
     cli_path = payload.get("cli_path")
     if cli_path:
         options.setdefault("cli_path", cli_path)
+    mcp_config_path = payload.get("mcp_config_path")
+    if mcp_config_path:
+        options.setdefault("mcp_config", mcp_config_path)
     session_id = payload.get("session_id")
     if session_id:
         options.setdefault("resume", session_id)
@@ -309,6 +312,10 @@ def main() -> int:
     parser = _build_parser()
     args = parser.parse_args()
     payload = json.loads(args.config)
+    env_payload = payload.get("env") or {}
+    if isinstance(env_payload, dict):
+        for key, value in env_payload.items():
+            os.environ[str(key)] = str(value)
     os.chdir(str(Path(payload["working_directory"]).resolve()))
     options = _build_options(payload)
     return asyncio.run(_run_loop(args.module, options))

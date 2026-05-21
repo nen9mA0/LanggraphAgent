@@ -1,101 +1,91 @@
 # Quick Start
 
-## 目标
+## Goal
 
-`src/workflow_agents` 提供一套把 `claude`、`claude_sdk` 和 `codex` 这类 agent backend 封装成 LangGraph node 的最小实现。
+`workflow_agents` lets you run long-lived agent backends either:
 
-核心约束：
+- behind LangGraph nodes with mailbox-style message passing, or
+- directly as reusable runtimes
 
-- 每个 agent node 对应一个长生命周期 runtime
-- node 只负责跨 node 的消息编排
-- agent 内部的 tool 输出、thinking、状态事件只保存在 agent 自己的历史里，不直接传播给其他 node
-- 每个 agent node 都有自己的 `.workflow/agent/<node_name>` 目录
+The core boundary is simple: downstream nodes receive only `TurnResult.final_output` unless you deliberately build something more detailed on top.
 
-## 目录
+## Package Layout
 
 ```text
 src/workflow_agents/
+|- AGENT_GUIDE.md
+|- config_reuse.py
 |- examples/
-|  `- langgraph_demo.py
 |- runtime/
-|  |- base.py
-|  |- claude.py
-|  |- claude_sdk.py
-|  `- codex.py
 |- node.py
 |- registry.py
 |- state.py
 |- storage.py
-`- types.py
+|- types.py
+`- __init__.py
 ```
 
-## 直接试跑
+## Fastest Trial
 
-不依赖真实 `claude` / `codex`，可以先跑 fake CLI 示例：
+Run the fake CLI demo first if you only want to verify the graph wiring:
 
-```bash
+```powershell
+$env:PYTHONPATH = (Resolve-Path .\src)
 python -m workflow_agents.examples.langgraph_demo --use-fake-cli
 ```
 
-如果要换成真实 CLI：
+Prepare the real local demo folders:
 
-```bash
-python -m workflow_agents.examples.langgraph_demo ^
-  --working-directory E:\\Project\\program_workflow\\.demo_workdir ^
-  --claude-exec claude ^
-  --codex-exec codex ^
-  --topic "Write and review a short release summary."
+```powershell
+$env:PYTHONPATH = (Resolve-Path .\src)
+python -m workflow_agents.examples.real_agent_demo `
+  --working-directory (Resolve-Path .) `
+  --prepare-only
 ```
 
-如果你想让 Claude 侧走 Python SDK，而不是直接走 `claude` CLI，请看：
+This creates the reusable agent folders under `.workflow/agent/`. Fill in the generated configuration files, then run:
 
-- `doc/agent_node/claude_sdk_runtime.md`
-- `doc/agent_node/real_agent_demo.md`
-
-运行后会输出最终 graph state，并在工作目录下生成：
-
-```text
-.workflow/
-`- agent/
-   |- writer/
-   |  |- config.json
-   |  |- runtime.json
-   |  |- history.jsonl
-   |  |- inbox.jsonl
-   |  `- outbox.jsonl
-   `- reviewer/
-      ...
+```powershell
+$env:PYTHONPATH = (Resolve-Path .\src)
+python -m workflow_agents.examples.real_agent_demo `
+  --working-directory (Resolve-Path .) `
+  --topic "Write and review a short explanation of long-lived agent nodes."
 ```
 
-## 最小集成代码
+For the full folder layout and editable files, see `examples/real_agent_demo.md`.
+
+If you want a node to reuse provider-native defaults without copying full provider directories, see `integrations/provider_config_reuse.md`.
+
+## Minimal LangGraph Integration
 
 ```python
 from langgraph.graph import END, START, StateGraph
 
-from workflow_agents import AgentNode, AgentNodeConfig, AgentRuntimeRegistry, AgentGraphState
+from workflow_agents import AgentGraphState, AgentNode, AgentNodeConfig, AgentRuntimeRegistry
 
 registry = AgentRuntimeRegistry()
 
 writer = AgentNode(
-    config=AgentNodeConfig(
+    config=AgentNodeConfig.from_provider_defaults(
         name="writer",
-        agent_type="claude_sdk",
-        executable_path="E:/Python/envs/claude/python.exe",
+        folder_name="claude_writer",
+        agent_type="claude",
+        executable_path="claude",
         working_directory="E:/Project/program_workflow",
+        provider_config_directory="E:/Project/program_workflow/.workflow/agent/claude_writer",
         targets=("reviewer",),
-        runtime_options={
-            "python_executable": "E:/Python/envs/claude/python.exe",
-        },
     ),
     registry=registry,
 )
 
 reviewer = AgentNode(
-    config=AgentNodeConfig(
+    config=AgentNodeConfig.from_provider_defaults(
         name="reviewer",
+        folder_name="codex_reviewer",
         agent_type="codex",
         executable_path="codex",
         working_directory="E:/Project/program_workflow",
+        provider_config_directory="E:/Project/program_workflow/.workflow/agent/codex_reviewer",
     ),
     registry=registry,
 )
@@ -109,18 +99,20 @@ graph.add_edge("reviewer", END)
 app = graph.compile()
 ```
 
-## runtime 接口
+## Direct Runtime Usage
 
-通过 `node.get_runtime()` 可直接拿到 runtime：
+If you do not need LangGraph orchestration, call the runtime through a node or registry:
 
 ```python
 runtime = writer.get_runtime()
-turn_id = runtime.send_input("draft a summary")
-done = runtime.is_output_complete()
-result = runtime.wait_for_completion()
-text = runtime.get_output_text()
-events = runtime.get_output_events()
-usage = runtime.get_context_usage()
-ratio = runtime.get_context_usage_ratio()
+result = runtime.run_turn("Draft a short summary.")
+print(result.status)
+print(result.final_output)
 runtime.shutdown()
 ```
+
+## Next Docs
+
+- `architecture.md`
+- `api_reference.md`
+- `examples/real_agent_demo.md`

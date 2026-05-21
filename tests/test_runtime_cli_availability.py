@@ -38,6 +38,7 @@ class RuntimeCliAvailabilityTestCase(unittest.TestCase):
         if not integration_enabled():
             raise unittest.SkipTest("set WORKFLOW_AGENTS_RUN_REAL_CLI_TESTS=1 to run real CLI availability tests")
 
+    # 检查命令行是否可以运行claude --version
     def test_claude_version_command_is_available(self) -> None:
         executable = shutil.which("claude")
         if not executable:
@@ -55,6 +56,7 @@ class RuntimeCliAvailabilityTestCase(unittest.TestCase):
         self.assertEqual(result.returncode, 0, msg=result.stderr)
         self.assertIn("claude", result.stdout.lower())
 
+    # 检查命令行是否可以运行codex --version
     def test_codex_version_command_is_available(self) -> None:
         executable = shutil.which("codex")
         if not executable:
@@ -79,7 +81,7 @@ class RuntimeCliAvailabilityTestCase(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temp_dir:
             workspace_root = Path(temp_dir) / ".workflow" / "agent" / "claude_runtime_smoke"
-            workspace = AgentWorkspace(node_name="claude_runtime_smoke", folder_name="claude_runtime_smoke", root=workspace_root)
+            workspace = AgentWorkspace(node_name="claude_runtime_smoke", root=workspace_root)
             config = AgentNodeConfig(
                 name="claude_runtime_smoke",
                 folder_name="claude_runtime_smoke",
@@ -98,8 +100,8 @@ class RuntimeCliAvailabilityTestCase(unittest.TestCase):
             self.skipTest("codex executable is not available on PATH")
 
         with tempfile.TemporaryDirectory() as temp_dir:
-            workspace_root = Path(temp_dir) / ".workflow" / "agent" / "codex_runtime_smoke"
-            workspace = AgentWorkspace(node_name="codex_runtime_smoke", folder_name="codex_runtime_smoke", root=workspace_root)
+            workspace_root = Path(temp_dir) / ".workflow" / "agent"
+            workspace = AgentWorkspace(node_name="codex_runtime_smoke", root=workspace_root)
             config = AgentNodeConfig(
                 name="codex_runtime_smoke",
                 folder_name="codex_runtime_smoke",
@@ -175,7 +177,11 @@ class ClaudeSDKRuntimeErrorPathTestCase(unittest.TestCase):
     def test_claude_sdk_runtime_missing_sdk_reports_clear_error(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             workspace_root = Path(temp_dir) / ".workflow" / "agent" / "claude_sdk_runtime_smoke"
-            workspace = AgentWorkspace(node_name="claude_sdk_runtime_smoke", folder_name="claude_sdk_runtime_smoke", root=workspace_root)
+            workspace = AgentWorkspace(
+                node_name="claude_sdk_runtime_smoke",
+                folder_name="claude_sdk_runtime_smoke",
+                root=workspace_root,
+            )
             config = AgentNodeConfig(
                 name="claude_sdk_runtime_smoke",
                 folder_name="claude_sdk_runtime_smoke",

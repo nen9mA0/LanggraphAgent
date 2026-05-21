@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from ..config_reuse import materialize_reused_agent_config
 from ..node import AgentNode
 from ..registry import AgentRuntimeRegistry
 from ..state import AgentGraphState
@@ -50,14 +51,35 @@ def ensure_demo_agent_directories(working_directory: str) -> dict[str, Path]:
         agent_type="claude",
         default_system_prompt="You are the writer node. Produce a concise draft for the reviewer node.",
     )
+    materialize_reused_agent_config(
+        agent_type="claude",
+        source_working_directory=root,
+        target_directory=claude_root,
+        reuse_fields=("model",),
+        include_home_defaults=False,
+    )
     _ensure_claude_sdk_template_files(
         claude_sdk_root,
         default_system_prompt="You are the writer node. Produce a concise draft for the reviewer node.",
+    )
+    materialize_reused_agent_config(
+        agent_type="claude_sdk",
+        source_working_directory=root,
+        target_directory=claude_sdk_root,
+        reuse_fields=("model",),
+        include_home_defaults=False,
     )
     _ensure_template_files(
         codex_root,
         agent_type="codex",
         default_system_prompt="You are the reviewer node. Review the writer output and return the final answer.",
+    )
+    materialize_reused_agent_config(
+        agent_type="codex",
+        source_working_directory=root,
+        target_directory=codex_root,
+        reuse_fields=("model",),
+        include_home_defaults=False,
     )
     return {"claude": claude_root, "claude_sdk": claude_sdk_root, "codex": codex_root}
 
@@ -74,9 +96,14 @@ def _ensure_template_files(root: Path, *, agent_type: str, default_system_prompt
             "- system_prompt.txt: system prompt appended to the agent\n"
             "- cli_args.json: JSON array of extra CLI arguments\n"
             "- env.json: JSON object of environment variables\n\n"
+            "Provider config reuse:\n"
+            "- .claude/settings.json or .codex/config.toml may be generated automatically\n"
+            "- only the minimal reusable subset is copied, currently focused on model settings\n"
+            "- edit these local files if you want this node to diverge from the project-level defaults\n\n"
             "Optional:\n"
             "- runtime.json will be written automatically after first run\n"
-            "- history.jsonl / inbox.jsonl / outbox.jsonl will be written automatically during runs\n"
+            "- inbox.jsonl / outbox.jsonl will be written automatically during runs\n"
+            "- history.jsonl is only written when runtime history persistence is explicitly enabled\n"
         ),
     }
     for filename, content in files.items():
@@ -101,10 +128,15 @@ def _ensure_claude_sdk_template_files(root: Path, *, default_system_prompt: str)
             "- system_prompt.txt: system prompt for the writer node\n"
             "- env.json: JSON object of environment variables for the worker process\n"
             "- client_options.json: JSON object forwarded into ClaudeAgentOptions(...)\n\n"
+            "Provider config reuse:\n"
+            "- .claude/settings.json may be generated automatically as a minimal local snapshot\n"
+            "- by default only model-related settings are copied\n"
+            "- extend this local snapshot later if you want to reuse more provider-native fields\n\n"
             "Generated during runs:\n"
             "- config.json\n"
             "- runtime.json\n"
-            "- history.jsonl / inbox.jsonl / outbox.jsonl\n"
+            "- inbox.jsonl / outbox.jsonl\n"
+            "- history.jsonl only when runtime history persistence is explicitly enabled\n"
         ),
     }
     for filename, content in files.items():
@@ -133,15 +165,18 @@ def _build_writer_config(*, working_directory: str, claude_backend: str) -> Agen
         "env": {str(k): str(v) for k, v in _load_optional_json(writer_root / "env.json").items()},
         "targets": ("reviewer",),
         "context_window_tokens": 200_000,
+        "persist_runtime_history": False,
+        "persist_node_mailboxes": True,
         "prompt_prefix": (
             "Produce the writer result only. Do not mention internal tool traces. "
             "Your output will be forwarded to a reviewer node."
         ),
     }
     if claude_backend == "claude":
-        return AgentNodeConfig(
+        return AgentNodeConfig.from_provider_defaults(
             agent_type="claude",
             executable_path="claude",
+            provider_config_directory=writer_root,
             cli_args=tuple(str(item) for item in _load_optional_json_list(writer_root / "cli_args.json")),
             **common_kwargs,
         )
@@ -153,9 +188,10 @@ def _build_writer_config(*, working_directory: str, claude_backend: str) -> Agen
         )
     sdk_module = _load_text(writer_root / "sdk_module.txt") or "claude_agent_sdk"
     cli_path = _load_text(writer_root / "cli_path.txt")
-    return AgentNodeConfig(
+    return AgentNodeConfig.from_provider_defaults(
         agent_type="claude_sdk",
         executable_path=python_executable,
+        provider_config_directory=writer_root,
         runtime_options={
             "python_executable": python_executable,
             "sdk_module": sdk_module,
@@ -169,16 +205,19 @@ def _build_writer_config(*, working_directory: str, claude_backend: str) -> Agen
 def _build_reviewer_config(*, working_directory: str) -> AgentNodeConfig:
     root = Path(working_directory).resolve()
     codex_root = root / ".workflow" / "agent" / CODEX_FOLDER
-    return AgentNodeConfig(
+    return AgentNodeConfig.from_provider_defaults(
         name="reviewer",
         folder_name=CODEX_FOLDER,
         agent_type="codex",
         executable_path="codex",
+        provider_config_directory=codex_root,
         working_directory=working_directory,
         system_prompt=_load_text(codex_root / "system_prompt.txt"),
         cli_args=tuple(str(item) for item in _load_optional_json_list(codex_root / "cli_args.json")),
         env={str(k): str(v) for k, v in _load_optional_json(codex_root / "env.json").items()},
         context_window_tokens=200_000,
+        persist_runtime_history=False,
+        persist_node_mailboxes=True,
         prompt_prefix=(
             "Review the writer output and return the final answer only. "
             "Do not include internal execution details."
