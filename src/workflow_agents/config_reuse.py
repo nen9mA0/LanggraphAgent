@@ -8,10 +8,9 @@ from typing import Any
 
 ReuseField = str
 
-
 @dataclass(slots=True)
 class ReusedAgentConfig:
-    """Minimal reusable settings extracted from a provider-native config source."""
+    """复用的具体配置内容字段"""
 
     model: str = ""
     skills: list[str] = field(default_factory=list)
@@ -19,17 +18,15 @@ class ReusedAgentConfig:
     runtime_options: dict[str, Any] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
 
-
 @dataclass(slots=True)
 class ReusedConfigSnapshot:
-    """A materialized provider config snapshot written under an agent workspace."""
+    """复用配置的整体记录"""
 
     agent_type: str
     target_directory: Path
-    reused_config: ReusedAgentConfig
+    reused_config: ReusedAgentConfig        # 具体复用的配置
     written_files: list[Path] = field(default_factory=list)
     skipped_fields: list[str] = field(default_factory=list)
-
 
 def build_reused_agent_config(
     *,
@@ -39,7 +36,15 @@ def build_reused_agent_config(
     home_directory: str | Path | None = None,
     include_home_defaults: bool = True,
 ) -> ReusedAgentConfig:
-    """Load a minimal reusable config snapshot from provider-native config files."""
+    """
+    通过参数从指定的配置文件夹构建一套最小可复用的具体配置
+    Args:
+        agent_type: agent类型
+        working_directory: 新的agent配置目录
+        [optional] reuse_fields: 哪些配置需要复用
+        [optional] home_directory: home目录，用于搜索agent默认配置。默认使用Path.home获取
+        [optional] include_home_defaults: 是否将home目录的agent配置加入配置合并列表
+    """
     workdir = Path(working_directory).resolve()
     home = Path(home_directory).resolve() if home_directory is not None else Path.home()
     if agent_type == "claude":
@@ -76,7 +81,16 @@ def materialize_reused_agent_config(
     include_home_defaults: bool = True,
     overwrite: bool = False,
 ) -> ReusedConfigSnapshot:
-    """Write a minimal provider-native config snapshot under an agent workspace."""
+    """
+    根据参数构建复用配置并写入到目标配置文件夹
+    Args:
+        agent_type: agent类型
+        source_working_directory: 新的agent配置目录
+        [optional] reuse_fields: 哪些配置需要复用
+        [optional] home_directory: home目录，用于搜索agent默认配置。默认使用Path.home获取
+        [optional] include_home_defaults: 是否将home目录的agent配置加入配置合并列表
+        [optional] overwrite: 是否覆盖原有配置
+    """
     reused = build_reused_agent_config(
         agent_type=agent_type,
         working_directory=source_working_directory,
@@ -111,7 +125,13 @@ def _load_claude_reused_config(
     reuse_fields: tuple[ReuseField, ...],
     include_home_defaults: bool,
 ) -> ReusedAgentConfig:
-    """Reuse the minimal Claude settings subset needed by workflow_agents."""
+    """
+    构建claude复用配置
+    会合并下列几个配置，后面的会覆盖前面的
+      * 若指定了include_home_defaults会合并home/.claude下的配置
+      * workdir/.claude 的settings.json和settings.local.json
+    根据情况保留下列几个关键字的配置： model skills mcp
+    """
     project_local = workdir / ".claude" / "settings.local.json"
     project_settings = workdir / ".claude" / "settings.json"
     user_settings = home / ".claude" / "settings.json"
@@ -146,7 +166,13 @@ def _load_codex_reused_config(
     reuse_fields: tuple[ReuseField, ...],
     include_home_defaults: bool,
 ) -> ReusedAgentConfig:
-    """Reuse the minimal Codex config subset needed by workflow_agents."""
+    """
+    构建codex复用配置
+    会合并下列几个配置，后面的会覆盖前面的
+      * 若指定了include_home_defaults会合并home/.codex下的配置
+      * workdir/.codex 的config.toml
+    根据情况保留下列几个关键字的配置： model model_provider model_reasoning_effort skills mcp
+    """
     project_config = workdir / ".codex" / "config.toml"
     user_config = home / ".codex" / "config.toml"
 

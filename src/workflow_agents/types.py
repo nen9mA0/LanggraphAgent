@@ -184,7 +184,31 @@ class TurnResult:
 
 @dataclass(slots=True)
 class AgentNodeConfig:
-    """Configuration for a long-lived agent node runtime."""
+    """
+    AgentNode配置
+    Fields:
+        name: node名称
+        agent_type: agent类型
+        working_directory: agent工作目录
+        [optional] executable_path: agent可执行文件路径
+        [optional] system_prompt: agent的system_prompt
+        [optional] model: agent使用的模型
+        [optional] cli_args: 传给agent的CLI参数
+        [optional] env: 传给agent的环境变量
+        [optional] context_window_tokens: 上下文窗口长度
+        [optional] max_turns: 对话轮数最大值
+        [optional] turn_timeout_seconds: 每轮对话超时时间
+        [optional] startup_timeout_seconds: agent启动超时时间
+        [optional] semantic_inactivity_timeout_seconds: 后端无直接响应超时时间
+        [optional] auto_start: 第一次使用时自动启动runtime
+        [optional] targets: Langgraph中的下游节点
+        [optional] prompt_prefix: 额外的prompt前缀
+        [optional] folder_name: 指定.workflow/agent下配置的文件夹名
+        [optional] persist_runtime_history: 是否保存runtime的所有对话历史
+        [optional] persist_node_mailboxes: 是否保存每个node的mailbox历史（与其他node交互的历史）
+        [optional] runtime_options: 额外的runtime配置
+        [optional] instance_key: runtime实例的标识，可以由Registry保存并复用
+    """
 
     name: str
     agent_type: AgentKind
@@ -217,7 +241,19 @@ class AgentNodeConfig:
         provider_config_directory: str | Path | None = None,
         **kwargs: Any,
     ) -> "AgentNodeConfig":
-        """Build a config by reusing a minimal supported subset from provider-native config files."""
+        """
+        根据参数由本地agent配置复用一套配置到当前AgentNode
+        Args:
+            cls: 回调函数，在函数最后调用，参数为kwargs
+            [optional] home_directory: home目录，用于搜索agent默认配置。默认使用Path.home获取
+            [optional] reuse_fields: 哪些配置需要复用
+            [optional] provider_config_directory: 目标Agent的配置文件夹
+            [optional] kwargs: 主要有下列键值作用
+                agent_type: agent类型
+                working_directory: 目标Agent的配置文件夹
+                model: agent使用的模型
+                runtime_options: 作为返回值返回一些最终的配置项（目前为是否复用skill和mcp）
+        """
         from .config_reuse import build_reused_agent_config
 
         agent_type = kwargs["agent_type"]

@@ -38,7 +38,13 @@ def default_prompt_builder(
 
 @dataclass(slots=True)
 class AgentNode:
-    """LangGraph-compatible node wrapper around a managed agent runtime."""
+    """
+    在Langgraph中Agent作为Node的包装器
+    Args:
+        config: Agent配置
+        [optional] registry: AgentRuntimeRegistry，用于维护Agent配置和Agent运行时
+        [optional] prompt_builder: 用于加工初始化prompt的函数
+    """
 
     config: AgentNodeConfig
     registry: AgentRuntimeRegistry | None = None
@@ -116,5 +122,7 @@ def build_agent_node(
     registry: AgentRuntimeRegistry | None = None,
     prompt_builder: PromptBuilder = default_prompt_builder,
 ) -> AgentNode:
-    """Construct an ``AgentNode`` with the provided configuration and helpers."""
+    """
+    创建一个AgentNode的Helper函数
+    """
     return AgentNode(config=config, registry=registry, prompt_builder=prompt_builder)

@@ -9,16 +9,24 @@ from .types import AgentNodeConfig
 
 
 class AgentRuntimeRegistry:
-    """Registry that owns runtime instances and their backing workspaces."""
+    """维护当前的所有Agent Workspace和Agent Runtime"""
 
     def __init__(self, base_directory: str | Path | None = None) -> None:
-        """Initialize the runtime registry with an optional workspace root."""
+        """
+        初始化一个RuntimeRegistry，创建WorkspaceManager
+        Args:
+            [optional] base_directory: 多Agent配置路径
+        """
         self.workspace_manager = AgentWorkspaceManager(base_directory=base_directory)
         self._lock = RLock()
         self._runtimes: dict[str, object] = {}
 
     def get_or_create(self, config: AgentNodeConfig):
-        """Return an existing runtime for the config or create and start a new one."""
+        """
+        获取当前已有的一个AgentRuntime，或新建一个runtime
+        Args:
+            config: 要获取的Agent配置
+        """
         with self._lock:
             runtime = self._runtimes.get(config.instance_key)
             if runtime is not None:
@@ -32,7 +40,7 @@ class AgentRuntimeRegistry:
             return runtime
 
     def shutdown_all(self) -> None:
-        """Shut down every runtime currently owned by the registry."""
+        """关闭当前运行的所有Agent"""
         with self._lock:
             runtimes = list(self._runtimes.values())
             self._runtimes.clear()

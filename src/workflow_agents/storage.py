@@ -19,7 +19,13 @@ def slugify_name(value: str) -> str:
 
 @dataclass(slots=True)
 class AgentWorkspace:
-    """Filesystem paths and helpers for a single agent node workspace."""
+    """
+    用于维护单个AgentNode的配置文件夹以及各个配置
+    Args:
+        node_name: 节点名
+        folder_name: 节点配置目录名
+        root: 节点配置目录路径
+    """
 
     node_name: str
     folder_name: str
@@ -86,7 +92,11 @@ class AgentWorkspace:
 
 
 class AgentWorkspaceManager:
-    """Allocate and reuse workspace folders for agent nodes."""
+    """
+    用于创建和维护多个AgentWorkspace类
+    Args:
+        [optional] base_directory: 要创建Workspace的目录，若没有指定则为当前目录
+    """
 
     def __init__(self, base_directory: str | Path | None = None) -> None:
         """Initialize the workspace manager under the given base directory."""
@@ -98,7 +108,12 @@ class AgentWorkspaceManager:
         self._allocated: set[Path] = set()
 
     def prepare_workspace(self, node_name: str, preferred_name: str | None = None) -> AgentWorkspace:
-        """Return a workspace for a node, creating a unique folder when needed."""
+        """
+        根据当前node_name创建一个Workspace
+        Args:
+            node_name: 节点名，若没有指定preferred_name，在正规化后会作为Workspace的工作目录（若有重名会在后面加'_数字'进行区分）
+            preferred_name: 指定配置目录名
+        """
         base_name = slugify_name(preferred_name or node_name)
         with self._lock:
             if preferred_name:

@@ -19,7 +19,12 @@ class _TurnContext:
 
 
 class ManagedAgentRuntime(ABC):
-    """Abstract base class for long-lived agent runtimes backed by CLI processes."""
+    """
+    Agent运行时基类
+    Args:
+        config: AgentNode配置
+        workspace: Agent对应的Workspace
+    """
 
     def __init__(self, config: AgentNodeConfig, workspace: AgentWorkspace) -> None:
         """Initialize runtime state and restore any persisted session identifier."""
@@ -34,12 +39,12 @@ class ManagedAgentRuntime(ABC):
         self._load_runtime_state()
 
     def _load_runtime_state(self) -> None:
-        """Restore persisted runtime metadata from disk."""
+        """获取当前Agent的运行时状态（runtime.json的session_id）"""
         runtime_state = self.workspace.load_runtime_state()
         self._session_id = str(runtime_state.get("session_id", "") or "")
 
     def _persist_runtime_state(self) -> None:
-        """Persist runtime metadata needed to resume future turns."""
+        """保存当前session_id到runtime.json"""
         self.workspace.save_runtime_state({"session_id": self._session_id})
 
     @property
@@ -49,7 +54,7 @@ class ManagedAgentRuntime(ABC):
             return self._session_id
 
     def start(self) -> None:
-        """Start the backing runtime if it is not already started."""
+        """启动Agent，实现由具体Agent后端的_start_impl"""
         with self._lock:
             if self._closed:
                 raise RuntimeError(f"agent runtime {self.config.name} has been closed")

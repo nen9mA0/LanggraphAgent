@@ -73,9 +73,9 @@ Configuration for one reusable agent runtime and its optional graph node wrapper
 - `folder_name`
   - fixed workspace folder name under `.workflow/agent`
 - `persist_runtime_history`
-  - append raw turn history to `history.jsonl`
+  - whether to append raw turn history to `history.jsonl`
 - `persist_node_mailboxes`
-  - append mailbox traffic to `inbox.jsonl` and `outbox.jsonl`
+  - whether to append mailbox traffic to `inbox.jsonl` and `outbox.jsonl`
 - `instance_key`
   - identity used by the registry to reuse a runtime instance
 
