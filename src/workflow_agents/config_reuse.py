@@ -15,6 +15,7 @@ class ReusedAgentConfig:
     model: str = ""
     skills: list[str] = field(default_factory=list)
     mcp: dict[str, Any] = field(default_factory=dict)
+    auth: dict[str, Any] = field(default_factory=dict)
     runtime_options: dict[str, Any] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -170,22 +171,32 @@ def _load_codex_reused_config(
     构建codex复用配置
     会合并下列几个配置，后面的会覆盖前面的
       * 若指定了include_home_defaults会合并home/.codex下的配置
-      * workdir/.codex 的config.toml
-    根据情况保留下列几个关键字的配置： model model_provider model_reasoning_effort skills mcp
+      * workdir/.codex 下的config.toml和auth.json
+    根据情况保留下列几个关键字的配置： model base_url model_provider model_reasoning_effort skills mcp
     """
     project_config = workdir / ".codex" / "config.toml"
+    project_auth = workdir / ".codex" / "auth.json"
     user_config = home / ".codex" / "config.toml"
+    user_auth = home / ".codex" / "auth.json"
 
     merged: dict[str, Any] = {}
+    merged_auth: dict[str, Any] = {}
     candidate_paths = []
+    auth_candidate_paths = []
     if include_home_defaults:
         candidate_paths.append(user_config)
+        auth_candidate_paths.append(user_auth)
     candidate_paths.append(project_config)
+    auth_candidate_paths.append(project_auth)
     for path in candidate_paths:
         merged.update(_read_simple_toml(path))
+    for path in auth_candidate_paths:
+        merged_auth.update(_read_json_object(path))
 
     model = str(merged.get("model", "") or "") if "model" in reuse_fields else ""
     runtime_options: dict[str, Any] = {}
+    if "model" in reuse_fields and "base_url" in merged:
+        runtime_options["reused_base_url"] = merged["base_url"]
     if "model" in reuse_fields and "model_provider" in merged:
         runtime_options["reused_model_provider"] = merged["model_provider"]
     if "model" in reuse_fields and "model_reasoning_effort" in merged:
@@ -196,11 +207,13 @@ def _load_codex_reused_config(
         model=model,
         skills=[str(item) for item in skills],
         mcp=mcp,
+        auth=merged_auth,
         runtime_options=runtime_options,
         metadata={
             "source_kind": "codex_config_toml",
             "reused_fields": list(reuse_fields),
             "sources": [str(path) for path in candidate_paths if path.exists()],
+            "auth_sources": [str(path) for path in auth_candidate_paths if path.exists()],
         },
     )
 
@@ -261,6 +274,8 @@ def _write_codex_snapshot(root: Path, reused: ReusedAgentConfig, *, overwrite: b
     payload: dict[str, Any] = {}
     if reused.model:
         payload["model"] = reused.model
+    if "reused_base_url" in reused.runtime_options:
+        payload["base_url"] = reused.runtime_options["reused_base_url"]
     if "reused_model_provider" in reused.runtime_options:
         payload["model_provider"] = reused.runtime_options["reused_model_provider"]
     if "reused_model_reasoning_effort" in reused.runtime_options:
@@ -269,18 +284,24 @@ def _write_codex_snapshot(root: Path, reused: ReusedAgentConfig, *, overwrite: b
         payload["skills"] = list(reused.skills)
     if reused.mcp:
         payload["mcp"] = dict(reused.mcp)
-    if not payload:
-        return [], []
+    written_files: list[Path] = []
+    skipped_fields: list[str] = []
 
     config_path = root / ".codex" / "config.toml"
-    if config_path.exists() and not overwrite:
-        return [], []
-    rendered, skipped_fields = _render_toml_document(payload)
-    if not rendered.strip():
-        return [], skipped_fields
-    config_path.parent.mkdir(parents=True, exist_ok=True)
-    config_path.write_text(rendered, encoding="utf-8")
-    return [config_path], skipped_fields
+    if payload and (overwrite or not config_path.exists()):
+        rendered, skipped_fields = _render_toml_document(payload)
+        if rendered.strip():
+            config_path.parent.mkdir(parents=True, exist_ok=True)
+            config_path.write_text(rendered, encoding="utf-8")
+            written_files.append(config_path.resolve())
+
+    auth_path = root / ".codex" / "auth.json"
+    if reused.auth and (overwrite or not auth_path.exists()):
+        auth_path.parent.mkdir(parents=True, exist_ok=True)
+        auth_path.write_text(json.dumps(reused.auth, ensure_ascii=True, indent=2) + "\n", encoding="utf-8")
+        written_files.append(auth_path.resolve())
+
+    return written_files, skipped_fields
 
 
 def _render_toml_document(payload: dict[str, Any]) -> tuple[str, list[str]]:

@@ -86,7 +86,8 @@ Configuration for one reusable agent runtime and its optional graph node wrapper
   - reused provider values currently include:
     - `reused_skills`
     - `reused_mcp`
-    - Codex model extras such as `reused_model_provider`
+    - Codex config values such as `reused_base_url`, `reused_model_provider`, and `reused_model_reasoning_effort`
+    - Codex auth payload as `reused_auth`
 
 ### `AgentNodeConfig.from_provider_defaults(...)`
 
@@ -109,6 +110,11 @@ Behavior:
 4. let explicit keyword arguments win
 
 If `reuse_fields` includes `skills` or `mcp`, those values are exposed through `runtime_options` for backend-specific consumption.
+
+For Codex, `from_provider_defaults(...)` also reuses:
+
+- `base_url` from `.codex/config.toml`
+- `auth.json` from `.codex/auth.json`
 
 ## `AgentNode`
 
@@ -275,6 +281,8 @@ Supported reusable fields:
 - `model`
 - `skills`
 - `mcp`
+- Codex-only `base_url`
+- Codex-only `auth.json`
 
 Return value:
 
@@ -285,6 +293,7 @@ Important output fields:
 - `model`
 - `skills`
 - `mcp`
+- `auth`
 - `runtime_options`
 - `metadata`
 
@@ -298,6 +307,7 @@ Output locations:
   - `.claude/settings.json`
 - Codex:
   - `.codex/config.toml`
+  - `.codex/auth.json`
 
 Return value:
 

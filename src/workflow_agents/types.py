@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+import re
 from typing import Any, Literal
 from uuid import uuid4
 
@@ -15,6 +16,19 @@ EventType = Literal["text", "thinking", "tool_use", "tool_result", "status", "er
 def utc_now_iso() -> str:
     """Return the current UTC timestamp in ISO 8601 format."""
     return datetime.now(timezone.utc).isoformat()
+
+
+def _slugify_agent_folder(value: str) -> str:
+    """Convert an agent name into a filesystem-safe folder name."""
+    text = re.sub(r"[^0-9A-Za-z_]+", "_", value.strip())
+    text = re.sub(r"_+", "_", text).strip("_")
+    return text or "agent"
+
+
+def default_agent_config_directory(*, working_directory: str | Path, name: str, folder_name: str | None = None) -> Path:
+    """Return the default `.workflow/agent/<folder>` directory for one agent."""
+    base = Path(working_directory).resolve() / ".workflow" / "agent"
+    return base / (folder_name or _slugify_agent_folder(name))
 
 
 @dataclass(slots=True)
@@ -250,7 +264,6 @@ class AgentNodeConfig:
         *,
         home_directory: str | Path | None = None,
         reuse_fields: tuple[str, ...] = ("model",),
-        provider_config_directory: str | Path | None = None,
         **kwargs: Any,
     ) -> "AgentNodeConfig":
         """
@@ -269,31 +282,18 @@ class AgentNodeConfig:
         from .config_reuse import build_reused_agent_config
 
         agent_type = kwargs["agent_type"]
-        actual_working_directory = kwargs["working_directory"]
-        working_directory = provider_config_directory or actual_working_directory
+        config_directory = default_agent_config_directory(
+            working_directory=kwargs["working_directory"],
+            name=str(kwargs["name"]),
+            folder_name=kwargs.get("folder_name"),
+        )
         reused = build_reused_agent_config(
             agent_type=agent_type,
-            working_directory=working_directory,
+            working_directory=config_directory,
             reuse_fields=reuse_fields,
             home_directory=home_directory,
-            include_home_defaults=provider_config_directory is None,
+            include_home_defaults=True,
         )
-        if (
-            provider_config_directory is not None
-            and Path(provider_config_directory).resolve() != Path(actual_working_directory).resolve()
-            and not reused.model
-            and not reused.skills
-            and not reused.mcp
-            and not reused.runtime_options
-        ):
-            reused = build_reused_agent_config(
-                agent_type=agent_type,
-                working_directory=actual_working_directory,
-                reuse_fields=reuse_fields,
-                home_directory=home_directory,
-                include_home_defaults=True,
-            )
-
         if not kwargs.get("model"):
             kwargs["model"] = reused.model
 
@@ -302,6 +302,8 @@ class AgentNodeConfig:
             runtime_options.setdefault("reused_skills", list(reused.skills))
         if reused.mcp:
             runtime_options.setdefault("reused_mcp", dict(reused.mcp))
+        if reused.auth:
+            runtime_options.setdefault("reused_auth", dict(reused.auth))
         runtime_options.update(dict(kwargs.get("runtime_options") or {}))
         kwargs["runtime_options"] = runtime_options
         return cls(**kwargs)

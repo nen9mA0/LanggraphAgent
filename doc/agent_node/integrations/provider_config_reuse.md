@@ -9,6 +9,8 @@ Current reusable fields:
 - `model`
 - `skills`
 - `mcp`
+- Codex-only `base_url`
+- Codex-only `auth.json`
 
 Public entry points:
 
@@ -36,6 +38,7 @@ This keeps agent-local snapshots independent while preserving project-level defa
   - `.claude/settings.json`
 - Codex:
   - `.codex/config.toml`
+  - `.codex/auth.json`
 
 The real-agent demo uses this to prepare stable per-node folders under `.workflow/agent/`.
 
@@ -85,7 +88,25 @@ Applies to:
 ### Reused model
 
 - reused `model` becomes `AgentNodeConfig.model`
-- reused `model_provider` and `model_reasoning_effort` are preserved in runtime options
+- reused `base_url`, `model_provider`, and `model_reasoning_effort` are preserved in runtime options
+
+Minimal example:
+
+```toml
+# .codex/config.toml
+model = "gpt-5-codex"
+base_url = "https://your-codex-gateway.example/v1"
+model_provider = "openai"
+model_reasoning_effort = "high"
+```
+
+```json
+{
+  "refresh_token": "..."
+}
+```
+
+Save the JSON file as `.codex/auth.json`.
 
 ### Reused skills
 
@@ -103,8 +124,16 @@ Applies to:
 
 When available, the runtime also emits:
 
+- local `CODEX_HOME/config.toml` with reused `base_url`
 - `-c model_provider=<json>`
 - `-c model_reasoning_effort=<json>`
+
+### Reused auth
+
+- reused `auth.json` is exposed as `runtime_options["reused_auth"]`
+- when a local provider snapshot already exists, the runtime uses that `auth.json`
+- otherwise the runtime writes a minimal local `CODEX_HOME/auth.json` before startup
+- this keeps per-agent Codex auth state isolated from the global home directory
 
 ## Design Constraints
 

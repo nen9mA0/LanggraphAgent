@@ -26,6 +26,7 @@ node_modules/**
 langgraph_codegen/node_modules/**
 ref/**
 .workflow/**
+**/.workflow/**
 .demo_workdir_test/**
 src/workflow_agents/runtime/codex_schema/json_schema/*.json
 src/workflow_agents/runtime/codex_schema/*.json

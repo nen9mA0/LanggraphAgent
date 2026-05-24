@@ -30,6 +30,7 @@ It also materializes minimal provider snapshots when project-level settings exis
 - `claude_writer/.claude/settings.json`
 - `claude_sdk_writer/.claude/settings.json`
 - `codex_reviewer/.codex/config.toml`
+- `codex_reviewer/.codex/auth.json`
 
 Those snapshots can carry more than model selection when you opt into broader reuse fields, including reusable `skills` and `mcp` values. See `../integrations/provider_config_reuse.md`.
 
@@ -76,7 +77,11 @@ Those snapshots can carry more than model selection when you opt into broader re
   - JSON object of environment variables
 - `.codex/config.toml`
   - optional local provider snapshot
+  - can carry `model`, `base_url`, `model_provider`, `model_reasoning_effort`
   - can also carry reusable `skills` and `mcp` values
+- `.codex/auth.json`
+  - optional local auth snapshot
+  - used when this reviewer node should run with isolated Codex auth state
 
 ## Run The Demo
 

@@ -9,7 +9,7 @@ from ..config_reuse import materialize_reused_agent_config
 from ..node import AgentNode
 from ..registry import AgentRuntimeRegistry
 from ..state import AgentGraphState
-from ..types import AgentNodeConfig, InterNodeMessage
+from ..types import AgentNodeConfig, InterNodeMessage, default_agent_config_directory
 
 CLAUDE_FOLDER = "claude_writer"
 CLAUDE_SDK_FOLDER = "claude_sdk_writer"
@@ -51,36 +51,18 @@ def ensure_demo_agent_directories(working_directory: str) -> dict[str, Path]:
         agent_type="claude",
         default_system_prompt="You are the writer node. Produce a concise draft for the reviewer node.",
     )
-    materialize_reused_agent_config(
-        agent_type="claude",
-        source_working_directory=root,
-        target_directory=claude_root,
-        reuse_fields=("model",),
-        include_home_defaults=False,
-    )
+    materialize_reused_agent_config(agent_type="claude", source_working_directory=root, target_directory=claude_root, reuse_fields=("model",), include_home_defaults=False)
     _ensure_claude_sdk_template_files(
         claude_sdk_root,
         default_system_prompt="You are the writer node. Produce a concise draft for the reviewer node.",
     )
-    materialize_reused_agent_config(
-        agent_type="claude_sdk",
-        source_working_directory=root,
-        target_directory=claude_sdk_root,
-        reuse_fields=("model",),
-        include_home_defaults=False,
-    )
+    materialize_reused_agent_config(agent_type="claude_sdk", source_working_directory=root, target_directory=claude_sdk_root, reuse_fields=("model",), include_home_defaults=False)
     _ensure_template_files(
         codex_root,
         agent_type="codex",
         default_system_prompt="You are the reviewer node. Review the writer output and return the final answer.",
     )
-    materialize_reused_agent_config(
-        agent_type="codex",
-        source_working_directory=root,
-        target_directory=codex_root,
-        reuse_fields=("model",),
-        include_home_defaults=False,
-    )
+    materialize_reused_agent_config(agent_type="codex", source_working_directory=root, target_directory=codex_root, reuse_fields=("model",), include_home_defaults=False)
     return {"claude": claude_root, "claude_sdk": claude_sdk_root, "codex": codex_root}
 
 
@@ -156,7 +138,7 @@ def _select_writer_folder(claude_backend: str) -> str:
 def _build_writer_config(*, working_directory: str, claude_backend: str) -> AgentNodeConfig:
     root = Path(working_directory).resolve()
     folder_name = _select_writer_folder(claude_backend)
-    writer_root = root / ".workflow" / "agent" / folder_name
+    writer_root = default_agent_config_directory(working_directory=root, name="writer", folder_name=folder_name)
     common_kwargs = {
         "name": "writer",
         "folder_name": folder_name,
@@ -176,7 +158,6 @@ def _build_writer_config(*, working_directory: str, claude_backend: str) -> Agen
         return AgentNodeConfig.from_provider_defaults(
             agent_type="claude",
             executable_path="claude",
-            provider_config_directory=writer_root,
             cli_args=tuple(str(item) for item in _load_optional_json_list(writer_root / "cli_args.json")),
             **common_kwargs,
         )
@@ -191,7 +172,6 @@ def _build_writer_config(*, working_directory: str, claude_backend: str) -> Agen
     return AgentNodeConfig.from_provider_defaults(
         agent_type="claude_sdk",
         executable_path=python_executable,
-        provider_config_directory=writer_root,
         runtime_options={
             "python_executable": python_executable,
             "sdk_module": sdk_module,
@@ -204,13 +184,12 @@ def _build_writer_config(*, working_directory: str, claude_backend: str) -> Agen
 
 def _build_reviewer_config(*, working_directory: str) -> AgentNodeConfig:
     root = Path(working_directory).resolve()
-    codex_root = root / ".workflow" / "agent" / CODEX_FOLDER
+    codex_root = default_agent_config_directory(working_directory=root, name="reviewer", folder_name=CODEX_FOLDER)
     return AgentNodeConfig.from_provider_defaults(
         name="reviewer",
         folder_name=CODEX_FOLDER,
         agent_type="codex",
         executable_path="codex",
-        provider_config_directory=codex_root,
         working_directory=working_directory,
         system_prompt=_load_text(codex_root / "system_prompt.txt"),
         cli_args=tuple(str(item) for item in _load_optional_json_list(codex_root / "cli_args.json")),

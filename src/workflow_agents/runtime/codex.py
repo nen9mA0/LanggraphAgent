@@ -1,17 +1,91 @@
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import queue
 import shutil
 import subprocess
+import sys
 import threading
 from collections import deque
 from pathlib import Path
 from typing import Any
 
+from pydantic import TypeAdapter
+
 from ..types import AgentNodeConfig, TokenUsageSnapshot
 from .base import ManagedAgentRuntime
+from .codex_schema.ClientNotification import ClientNotification, ClientNotification1
+from .codex_schema.ClientRequest import (
+    ClientRequest1,
+    ClientRequest2,
+    ClientRequest3,
+    ClientRequest48,
+    ClientRequest49,
+    InitializeParams,
+    ThreadResumeParams,
+    ThreadStartParams,
+    TurnStartParams,
+)
+from .codex_schema.CommandExecutionRequestApprovalParams import CommandExecutionRequestApprovalParams
+from .codex_schema.CommandExecutionRequestApprovalResponse import CommandExecutionRequestApprovalResponse
+from .codex_schema.FileChangeRequestApprovalParams import FileChangeRequestApprovalParams
+from .codex_schema.FileChangeRequestApprovalResponse import FileChangeRequestApprovalResponse
+from .codex_schema.McpServerElicitationRequestResponse import McpServerElicitationRequestResponse
+from .codex_schema.McpServerElicitationRequestParams import McpServerElicitationRequestParams
+
+
+_SCHEMA_DIR = Path(__file__).resolve().parent / "codex_schema"
+
+
+def _load_schema_module(filename: str, module_name: str):
+    """Load a generated schema module whose filename is not a valid package name."""
+    spec = importlib.util.spec_from_file_location(module_name, _SCHEMA_DIR / filename)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"unable to load schema module: {filename}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+_PROTO = _load_schema_module(
+    "codex_app_server_protocol.schemas.py",
+    "workflow_agents.runtime.codex_schema._codex_app_server_protocol_schemas",
+)
+_PROTO_V2 = _load_schema_module(
+    "codex_app_server_protocol.v2.schemas.py",
+    "workflow_agents.runtime.codex_schema._codex_app_server_protocol_v2_schemas",
+)
+
+JSONRPCMessage = _PROTO.JSONRPCMessage
+JSONRPCRequest = _PROTO.JSONRPCRequest
+JSONRPCNotification = _PROTO.JSONRPCNotification
+JSONRPCResponse = _PROTO.JSONRPCResponse
+JSONRPCError = _PROTO.JSONRPCError
+ToolRequestUserInputParams = _PROTO.ToolRequestUserInputParams
+ToolRequestUserInputResponse = _PROTO.ToolRequestUserInputResponse
+TurnStartedNotification = _PROTO.TurnStartedNotification
+TurnCompletedNotification = _PROTO.TurnCompletedNotification
+TurnDiffUpdatedNotification = _PROTO.TurnDiffUpdatedNotification
+TurnPlanUpdatedNotification = _PROTO.TurnPlanUpdatedNotification
+ItemStartedNotification = _PROTO.ItemStartedNotification
+ItemCompletedNotification = _PROTO.ItemCompletedNotification
+AgentMessageDeltaNotification = _PROTO_V2.AgentMessageDeltaNotification
+ReasoningTextDeltaNotification = _PROTO_V2.ReasoningTextDeltaNotification
+CommandExecutionOutputDeltaNotification = _PROTO_V2.CommandExecutionOutputDeltaNotification
+FileChangeOutputDeltaNotification = _PROTO_V2.FileChangeOutputDeltaNotification
+
+_JSONRPC_MESSAGE_ADAPTER = TypeAdapter(JSONRPCMessage)
+_CLIENT_REQUEST_ADAPTERS = {
+    "initialize": TypeAdapter(ClientRequest1),
+    "thread/start": TypeAdapter(ClientRequest2),
+    "thread/resume": TypeAdapter(ClientRequest3),
+    "turn/start": TypeAdapter(ClientRequest48),
+    "turn/interrupt": TypeAdapter(ClientRequest49),
+}
+_CLIENT_NOTIFICATION_ADAPTER = TypeAdapter(ClientNotification1)
 
 
 class CodexRuntime(ManagedAgentRuntime):
@@ -42,10 +116,11 @@ class CodexRuntime(ManagedAgentRuntime):
         * 否则用thread/start启动新会话，并保存session_id
         """
         executable = self._resolve_executable()
+        codex_home = self._prepare_codex_home()
         process = subprocess.Popen(
             [executable, "app-server", "--listen", "stdio://", *self._config_override_args(), *self.config.cli_args],
             cwd=str(self.config.normalized_working_directory()),
-            env={**os.environ, **self.config.env},
+            env={**os.environ, **self.config.env, "CODEX_HOME": str(codex_home)},
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -61,24 +136,24 @@ class CodexRuntime(ManagedAgentRuntime):
 
         self._rpc_request(
             "initialize",
-            {
-                "clientInfo": {"name": "workflow_agents", "version": "0.1.0"},
-                "capabilities": {"experimentalApi": True},
-            },
+            InitializeParams(
+                clientInfo={"name": "workflow_agents", "version": "0.1.0"},
+                capabilities={"experimentalApi": True},
+            ),
             timeout=self.config.startup_timeout_seconds,
         )
-        self._rpc_notify("initialized")
+        self._rpc_notify("initialized", ClientNotification1(method="initialized"))
 
         if self._thread_id:
             try:
                 response = self._rpc_request(
                     "thread/resume",
-                    {
-                        "threadId": self._thread_id,
-                        "cwd": str(self.config.normalized_working_directory()),
-                        "model": self.config.model or None,
-                        "developerInstructions": self.config.system_prompt or None,
-                    },
+                    ThreadResumeParams(
+                        threadId=self._thread_id,
+                        cwd=str(self.config.normalized_working_directory()),
+                        model=self.config.model or None,
+                        developerInstructions=self.config.system_prompt or None,
+                    ),
                     timeout=self.config.startup_timeout_seconds,
                 )
                 self._thread_id = self._extract_thread_id(response) or self._thread_id
@@ -88,12 +163,11 @@ class CodexRuntime(ManagedAgentRuntime):
         if not self._thread_id:
             response = self._rpc_request(
                 "thread/start",
-                {
-                    "model": self.config.model or None,
-                    "cwd": str(self.config.normalized_working_directory()),
-                    "developerInstructions": self.config.system_prompt or None,
-                    "persistExtendedHistory": True,
-                },
+                ThreadStartParams(
+                    model=self.config.model or None,
+                    cwd=str(self.config.normalized_working_directory()),
+                    developerInstructions=self.config.system_prompt or None,
+                ),
                 timeout=self.config.startup_timeout_seconds,
             )
             self._thread_id = self._extract_thread_id(response)
@@ -122,26 +196,26 @@ class CodexRuntime(ManagedAgentRuntime):
         self._item_text_buffers.clear()
         response = self._rpc_request(
             "turn/start",
-            {
-                "threadId": self._thread_id,
-                "input": [{"type": "text", "text": prompt}],
-            },
+            TurnStartParams(
+                threadId=self._thread_id,
+                input=[{"type": "text", "text": prompt}],
+            ),
             timeout=self.config.startup_timeout_seconds,
         )
         self._active_remote_turn_id = self._extract_turn_id(response)
 
-    def _rpc_notify(self, method: str, params: dict[str, Any] | None = None) -> None:
+    def _rpc_notify(self, method: str, params: Any | None = None) -> None:
         """向codex发送一个JSON-RPC notification"""
-        self._write_rpc({"jsonrpc": "2.0", "method": method, "params": params or {}})
+        self._write_rpc({"jsonrpc": "2.0", "method": method, "params": self._model_dump(params) if params is not None else {}})
 
-    def _rpc_request(self, method: str, params: dict[str, Any], timeout: float) -> dict[str, Any]:
+    def _rpc_request(self, method: str, params: Any, timeout: float) -> dict[str, Any]:
         """向codex server发送一个JSONRPC request并且等待回应"""
         with self._rpc_lock:
             self._request_id += 1
             request_id = self._request_id
             response_queue: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=1)
             self._pending[request_id] = response_queue
-        self._write_rpc({"jsonrpc": "2.0", "id": request_id, "method": method, "params": params})
+        self._write_rpc({"jsonrpc": "2.0", "id": request_id, "method": method, "params": self._model_dump(params)})
         try:
             payload = response_queue.get(timeout=timeout)
         except queue.Empty as exc:
@@ -160,6 +234,16 @@ class CodexRuntime(ManagedAgentRuntime):
         self._process.stdin.write("\n")
         self._process.stdin.flush()
 
+    def _model_dump(self, value: Any) -> Any:
+        """Convert generated Pydantic models into JSON-serializable data."""
+        if hasattr(value, "model_dump"):
+            return value.model_dump(mode="json")
+        return value
+
+    def _validate_jsonrpc_message(self, payload: Any) -> JSONRPCMessage:
+        """Validate an incoming payload against the generated JSON-RPC union."""
+        return _JSONRPC_MESSAGE_ADAPTER.validate_python(payload)
+
     def _reader_loop(self) -> None:
         """
         读取输出行，并根据输出内容处理
@@ -175,13 +259,15 @@ class CodexRuntime(ManagedAgentRuntime):
                 text = line.strip()
                 if not text:
                     continue
-                payload = json.loads(text)
-                if "id" in payload and ("result" in payload or "error" in payload):
-                    self._handle_response(payload)
-                elif "id" in payload and "method" in payload:
-                    self._handle_server_request(payload)
-                elif "method" in payload:
-                    self._handle_notification(payload)
+                payload = self._validate_jsonrpc_message(json.loads(text))
+                if isinstance(payload.root, JSONRPCResponse):
+                    self._handle_response(payload.root)
+                elif isinstance(payload.root, JSONRPCError):
+                    self._handle_error(payload.root)
+                elif isinstance(payload.root, JSONRPCRequest):
+                    self._handle_server_request(payload.root)
+                elif isinstance(payload.root, JSONRPCNotification):
+                    self._handle_notification(payload.root)
         finally:
             with self._rpc_lock:
                 for response_queue in self._pending.values():
@@ -198,42 +284,49 @@ class CodexRuntime(ManagedAgentRuntime):
             if text:
                 self._stderr_tail.append(text)
 
-    def _handle_response(self, payload: dict[str, Any]) -> None:
+    def _handle_response(self, payload: JSONRPCResponse) -> None:
         """处理普通输出"""
-        request_id = int(payload["id"])
+        request_id = int(payload.id.root)
         with self._rpc_lock:
             response_queue = self._pending.pop(request_id, None)
         if response_queue is None:
             return
-        if "error" in payload:
-            error = payload["error"]
-            if isinstance(error, dict):
-                error = error.get("message", json.dumps(error, ensure_ascii=True))
-            response_queue.put({"error": str(error)})
-        else:
-            response_queue.put({"result": payload.get("result", {})})
+        response_queue.put({"result": self._model_dump(payload.result)})
 
-    def _handle_server_request(self, payload: dict[str, Any]) -> None:
+    def _handle_error(self, payload: JSONRPCError) -> None:
+        """Handle a JSON-RPC error object."""
+        request_id = int(payload.id.root)
+        with self._rpc_lock:
+            response_queue = self._pending.pop(request_id, None)
+        if response_queue is None:
+            return
+        response_queue.put({"error": payload.error.message})
+
+    def _handle_server_request(self, payload: JSONRPCRequest) -> None:
         """
         处理带method的输出
         * commandExecution/requestApproval
         * tool/requestInput
         * item/tool/requestUserInput
         """
-        request_id = payload.get("id")
-        method = str(payload.get("method", ""))
-        params = payload.get("params", {}) or {}
+        method = str(payload.method)
+        request_id = payload.id.root
+        params = self._model_dump(payload.params)
 
-        if method == "commandExecution/requestApproval":
-            self._respond_to_server_request(request_id, {"decision": "approved", "scope": "once"})
+        if method == "item/commandExecution/requestApproval":
+            self._respond_to_server_request(request_id, CommandExecutionRequestApprovalResponse(decision="accept"))
             return
-
-        if method == "tool/requestInput":
-            self._respond_to_server_request(request_id, {"text": ""})
+        if method == "item/fileChange/requestApproval":
+            self._respond_to_server_request(request_id, FileChangeRequestApprovalResponse(decision="accept"))
             return
-
         if method == "item/tool/requestUserInput":
-            self._respond_to_server_request(request_id, {"values": []})
+            questions = params.get("questions", []) if isinstance(params, dict) else []
+            answers: dict[str, Any] = {}
+            for question in questions:
+                question_id = str(question.get("id", "") or "") if isinstance(question, dict) else ""
+                if question_id:
+                    answers[question_id] = {"answers": [""]}
+            self._respond_to_server_request(request_id, ToolRequestUserInputResponse(answers=answers))
             return
 
         self._respond_to_server_request(request_id, {})
@@ -242,14 +335,14 @@ class CodexRuntime(ManagedAgentRuntime):
                 self._active_turn_id,
                 "log",
                 content=f"unhandled Codex server request: {method}",
-                payload=dict(params) if isinstance(params, dict) else {},
+                payload=self._model_dump(params) if params is not None else {},
             )
 
-    def _respond_to_server_request(self, request_id: Any, result: dict[str, Any]) -> None:
+    def _respond_to_server_request(self, request_id: Any, result: Any) -> None:
         """Return a JSON-RPC success response for a server-initiated request."""
-        self._write_rpc({"jsonrpc": "2.0", "id": request_id, "result": result})
+        self._write_rpc({"jsonrpc": "2.0", "id": request_id, "result": self._model_dump(result)})
 
-    def _handle_notification(self, payload: dict[str, Any]) -> None:
+    def _handle_notification(self, payload: JSONRPCNotification) -> None:
         """
         处理notification输出
         * turn/started
@@ -257,28 +350,32 @@ class CodexRuntime(ManagedAgentRuntime):
         * turn/completed
         * turn/failed
         """
-        method = str(payload.get("method", ""))
-        params = payload.get("params", {}) or {}
+        method = str(payload.method)
+        params = self._model_dump(payload.params)
+
         if method == "turn/started":
-            turn = params.get("turn", {}) or {}
-            remote_turn_id = str(turn.get("id", "") or "")
+            turn = params.get("turn", {}) if isinstance(params, dict) else {}
+            remote_turn_id = str((turn or {}).get("id", "") or "")
             if remote_turn_id:
                 self._active_remote_turn_id = remote_turn_id
             self._record_event(self._active_turn_id, "status", content="running")
             return
-        if method in {"turn/updated", "turn/stream"}:
-            self._handle_turn_update(params)
+        if method in {"turn/updated", "turn/stream", "turn/diff/updated", "turn/plan/updated"}:
+            self._handle_turn_update(params if isinstance(params, dict) else {})
             return
         if method == "turn/completed":
-            self._handle_turn_completed(params)
+            self._handle_turn_completed(params if isinstance(params, dict) else {})
             return
         if method == "turn/failed":
-            self._handle_turn_failed(params)
+            self._handle_turn_failed(params if isinstance(params, dict) else {})
             return
         if not method.startswith("item/"):
             return
         if method in {"item/started", "item/updated", "item/completed"}:
-            self._handle_item_notification(method, params)
+            self._handle_item_notification(method, params if isinstance(params, dict) else {})
+            return
+        if method in {"item/agentMessage/delta", "item/reasoning/textDelta", "item/commandExecution/outputDelta", "item/fileChange/outputDelta"}:
+            self._handle_item_delta_notification(method, params if isinstance(params, dict) else {})
 
     def _handle_turn_update(self, params: dict[str, Any]) -> None:
         """Merge any usage updates emitted before turn completion."""
@@ -310,7 +407,7 @@ class CodexRuntime(ManagedAgentRuntime):
             return
         final_status = "completed"
         final_error = ""
-        if status in {"failed"}:
+        if status == "failed":
             final_status = "failed"
             final_error = self._extract_error_message(turn.get("error")) or "codex turn failed"
         elif status in {"cancelled", "canceled", "aborted", "interrupted"}:
@@ -347,7 +444,7 @@ class CodexRuntime(ManagedAgentRuntime):
         self._item_text_buffers.clear()
 
     def _handle_item_notification(self, method: str, params: dict[str, Any]) -> None:
-        """Convert Codex item events into managed runtime events."""
+        """Convert item lifecycle events into managed runtime events."""
         item = params.get("item", {}) or {}
         item_type = str(item.get("type", "") or "")
         item_id = str(item.get("id", "") or "")
@@ -372,6 +469,23 @@ class CodexRuntime(ManagedAgentRuntime):
                 call_id=item_id,
                 payload=dict(item),
             )
+
+    def _handle_item_delta_notification(self, method: str, params: dict[str, Any]) -> None:
+        """Convert standard Codex delta notifications into runtime events."""
+        item_id = str(params.get("itemId", "") or "")
+        delta = str(params.get("delta", "") or "")
+        if not delta:
+            return
+        if method == "item/agentMessage/delta":
+            self._item_text_buffers[item_id] = self._item_text_buffers.get(item_id, "") + delta
+            self._record_event(self._active_turn_id, "text", call_id=item_id, content=delta)
+            self._set_final_output(self._active_turn_id, self._item_text_buffers[item_id])
+        elif method == "item/reasoning/textDelta":
+            self._record_event(self._active_turn_id, "thinking", call_id=item_id, content=delta)
+        elif method == "item/commandExecution/outputDelta":
+            self._record_event(self._active_turn_id, "log", call_id=item_id, content=delta, payload={"item_type": "commandExecution"})
+        elif method == "item/fileChange/outputDelta":
+            self._record_event(self._active_turn_id, "log", call_id=item_id, content=delta, payload={"item_type": "fileChange"})
 
     def _handle_command_execution_item(self, method: str, item_id: str, item: dict[str, Any]) -> None:
         """Map command execution items to tool_use/tool_result events."""
@@ -437,7 +551,7 @@ class CodexRuntime(ManagedAgentRuntime):
             )
 
     def _handle_agent_message_item(self, method: str, item_id: str, item: dict[str, Any]) -> None:
-        """Map agent message items to text streaming and final output state."""
+        """Map agent message items to streaming text and final output state."""
         if method == "item/started":
             self._item_text_buffers[item_id] = ""
             return
@@ -478,6 +592,15 @@ class CodexRuntime(ManagedAgentRuntime):
         text = item.get("text")
         if isinstance(text, str):
             return text
+        content = item.get("content")
+        if isinstance(content, list):
+            parts: list[str] = []
+            for block in content:
+                if isinstance(block, dict):
+                    piece = block.get("text")
+                    if isinstance(piece, str):
+                        parts.append(piece)
+            return "".join(parts)
         return ""
 
     def _extract_agent_message_text(self, item: dict[str, Any]) -> str:
@@ -526,12 +649,11 @@ class CodexRuntime(ManagedAgentRuntime):
             try:
                 self._rpc_request(
                     "turn/interrupt",
-                    {"threadId": self._thread_id, "turnId": remote_turn_id},
+                    TurnInterruptParams(threadId=self._thread_id, turnId=remote_turn_id),
                     timeout=min(5.0, self.config.startup_timeout_seconds),
                 )
             except Exception:
                 pass
-
         if active_turn_id:
             self._complete_turn(active_turn_id, status=status, error=reason, session_id=self._thread_id)
             self._active_turn_id = ""
@@ -581,3 +703,57 @@ class CodexRuntime(ManagedAgentRuntime):
         if reused_reasoning_effort:
             args.extend(["-c", f"model_reasoning_effort={json.dumps(str(reused_reasoning_effort), ensure_ascii=True)}"])
         return args
+
+    def _prepare_codex_home(self) -> Path:
+        """Prepare an isolated CODEX_HOME with minimal reused config and auth state."""
+        codex_home = self.workspace.root / ".codex"
+        codex_home.mkdir(parents=True, exist_ok=True)
+
+        provider_root = self.workspace.root
+        self._copy_if_missing(provider_root / ".codex" / "config.toml", codex_home / "config.toml")
+        self._copy_if_missing(provider_root / ".codex" / "auth.json", codex_home / "auth.json")
+
+        self._write_minimal_codex_config(codex_home / "config.toml")
+        self._write_reused_auth(codex_home / "auth.json")
+        return codex_home
+
+    def _copy_if_missing(self, source: Path, target: Path) -> None:
+        """Copy a config artifact into CODEX_HOME when a local copy does not yet exist."""
+        if not source.exists() or target.exists():
+            return
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, target)
+
+    def _write_minimal_codex_config(self, path: Path) -> None:
+        """Write a minimal config.toml for base_url/model reuse when no snapshot exists yet."""
+        if path.exists():
+            return
+        payload: dict[str, Any] = {}
+        if self.config.model:
+            payload["model"] = self.config.model
+        reused_base_url = self.config.runtime_options.get("reused_base_url")
+        if reused_base_url:
+            payload["base_url"] = str(reused_base_url)
+        reused_model_provider = self.config.runtime_options.get("reused_model_provider")
+        if reused_model_provider:
+            payload["model_provider"] = str(reused_model_provider)
+        reused_reasoning_effort = self.config.runtime_options.get("reused_model_reasoning_effort")
+        if reused_reasoning_effort:
+            payload["model_reasoning_effort"] = str(reused_reasoning_effort)
+        if not payload:
+            return
+        rendered = []
+        for key, value in payload.items():
+            rendered.append(f"{key} = {json.dumps(value, ensure_ascii=True)}")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("\n".join(rendered) + "\n", encoding="utf-8")
+
+    def _write_reused_auth(self, path: Path) -> None:
+        """Write a minimal auth.json into CODEX_HOME when reuse exposed auth tokens."""
+        if path.exists():
+            return
+        reused_auth = self.config.runtime_options.get("reused_auth")
+        if not isinstance(reused_auth, dict) or not reused_auth:
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(reused_auth, ensure_ascii=True, indent=2) + "\n", encoding="utf-8")

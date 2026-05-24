@@ -12,7 +12,7 @@ This directory documents `src/workflow_agents`, which wraps long-lived `claude`,
 6. `integrations/claude_sdk.md`
 7. `internals/runtime_and_state.md`
 
-For the shortest code-oriented orientation, read `src/workflow_agents/AGENT_GUIDE.md` first.
+For the shortest code-oriented orientation, read `src/workflow_agents/AGENTS.md` first.
 
 If you are updating these docs rather than consuming them, read `DOC_MAINTENANCE_GUIDE.md` first.
 
@@ -50,4 +50,4 @@ If you are updating these docs rather than consuming them, read `DOC_MAINTENANCE
   - Codex thread id
 - provider config reuse stays intentionally minimal:
   - Claude snapshots are written to `.claude/settings.json`
-  - Codex snapshots are written to `.codex/config.toml`
+  - Codex snapshots are written to `.codex/config.toml` and `.codex/auth.json`
