@@ -9,7 +9,7 @@ from .codex import CodexRuntime
 
 
 def create_agent_runtime(config: AgentNodeConfig, workspace: AgentWorkspace) -> ManagedAgentRuntime:
-    """Create the concrete runtime implementation for the configured agent type."""
+    """根据Agent类型创建对应的runtime"""
     if config.agent_type == "claude":
         return ClaudeCodeRuntime(config, workspace)
     if config.agent_type == "claude_sdk":

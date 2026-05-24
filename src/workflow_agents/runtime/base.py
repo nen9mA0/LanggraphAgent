@@ -12,7 +12,7 @@ from ..types import AgentNodeConfig, AgentOutputEvent, TokenUsageSnapshot, TurnR
 
 @dataclass(slots=True)
 class _TurnContext:
-    """In-memory bookkeeping for the currently running turn."""
+    """每轮对话的上下文，包含一个TurnResult和标识是否完成的Event"""
 
     result: TurnResult
     completion: threading.Event = field(default_factory=threading.Event)
@@ -65,7 +65,14 @@ class ManagedAgentRuntime(ABC):
             self._started = True
 
     def send_input(self, prompt: str) -> str:
-        """Start a new turn by sending input to the backing agent runtime."""
+        """
+        向Agent发送一段prompt
+        一次消息发送流程
+        * 创建TurnResult记录一次会话
+        * 创建TurnContext作为上下文管理，提供事件
+        * 将当前会话记录到runtime.json
+        * 调用_send_input_impl具体发送到agent，若发生错误调用_complete_turn完成一轮对话
+        """
         if self.config.auto_start:
             self.start()
         with self._lock:
@@ -91,7 +98,7 @@ class ManagedAgentRuntime(ABC):
         return turn_result.turn_id
 
     def wait_for_completion(self, timeout: float | None = None) -> TurnResult:
-        """Wait for the current turn to finish and return an immutable snapshot."""
+        """等待上下文Event并返回一个TurnResult，若超时调用_cancel_active_turn取消本轮对话"""
         with self._lock:
             if self._current_turn is not None:
                 turn_context = self._current_turn
@@ -111,19 +118,19 @@ class ManagedAgentRuntime(ABC):
             return TurnResult.from_dict(snapshot.to_dict())
 
     def run_turn(self, prompt: str, timeout: float | None = None) -> TurnResult:
-        """Convenience wrapper that sends input and waits for completion."""
+        """一个包装了send_input和wait_for_completion的工具函数"""
         self.send_input(prompt)
         return self.wait_for_completion(timeout=timeout)
 
     def is_output_complete(self) -> bool:
-        """Report whether the current turn has fully completed."""
+        """当前对话是否已完成"""
         with self._lock:
             if self._current_turn is None:
                 return self._last_turn is not None
             return self._current_turn.completion.is_set()
 
     def get_output_events(self, after_index: int = 0) -> list[AgentOutputEvent]:
-        """Return recorded output events for the active or most recent turn."""
+        """获取当前一轮对话或最后一轮对话的流事件"""
         with self._lock:
             target = self._current_turn.result if self._current_turn is not None else self._last_turn
             if target is None:
@@ -131,13 +138,13 @@ class ManagedAgentRuntime(ABC):
             return [AgentOutputEvent.from_dict(event.to_dict()) for event in target.events if event.index >= after_index]
 
     def get_output_text(self) -> str:
-        """Return the final accumulated text for the active or most recent turn."""
+        """获取当前一轮对话或最后一轮对话的最终输出"""
         with self._lock:
             target = self._current_turn.result if self._current_turn is not None else self._last_turn
             return "" if target is None else target.final_output
 
     def get_context_usage(self) -> TokenUsageSnapshot:
-        """Return token usage for the active or most recent turn."""
+        """获取当前一轮对话或最后一轮对话的token用量"""
         with self._lock:
             target = self._current_turn.result if self._current_turn is not None else self._last_turn
             if target is None:
@@ -149,7 +156,7 @@ class ManagedAgentRuntime(ABC):
         return self.get_context_usage().usage_ratio()
 
     def shutdown(self) -> None:
-        """Shut down the runtime and release external resources."""
+        """关闭一个agent"""
         with self._lock:
             if self._closed:
                 return
@@ -166,7 +173,7 @@ class ManagedAgentRuntime(ABC):
         tool_name: str = "",
         payload: dict[str, Any] | None = None,
     ) -> None:
-        """Record a streaming event for the currently running turn."""
+        """将当前一轮事件保存到运行时记录中"""
         with self._lock:
             if self._current_turn is None or self._current_turn.result.turn_id != turn_id:
                 return
@@ -212,7 +219,7 @@ class ManagedAgentRuntime(ABC):
             self._persist_runtime_state()
 
     def _set_final_output(self, turn_id: str, final_output: str) -> None:
-        """Override the final text buffer for the specified active turn."""
+        """获取当前一轮对话或最后一轮对话的final_output"""
         with self._lock:
             if self._current_turn is None or self._current_turn.result.turn_id != turn_id:
                 return
@@ -228,7 +235,7 @@ class ManagedAgentRuntime(ABC):
         session_id: str | None = None,
         usage: TokenUsageSnapshot | None = None,
     ) -> None:
-        """Finalize the specified turn and persist its completed snapshot."""
+        """会话准备结束，保存相应的历史信息，并设置对应事件"""
         with self._lock:
             if self._current_turn is None or self._current_turn.result.turn_id != turn_id:
                 return

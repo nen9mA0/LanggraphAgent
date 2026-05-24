@@ -233,7 +233,9 @@ def _read_simple_toml(path: Path) -> dict[str, Any]:
 
 
 def _write_claude_snapshot(root: Path, reused: ReusedAgentConfig, *, overwrite: bool) -> list[Path]:
-    """Write a minimal Claude settings snapshot when reusable fields are available."""
+    """
+    将当前的复用配置写入claude配置目录
+    """
     payload: dict[str, Any] = {}
     if reused.model:
         payload["model"] = reused.model
@@ -253,7 +255,9 @@ def _write_claude_snapshot(root: Path, reused: ReusedAgentConfig, *, overwrite: 
 
 
 def _write_codex_snapshot(root: Path, reused: ReusedAgentConfig, *, overwrite: bool) -> tuple[list[Path], list[str]]:
-    """Write a minimal Codex config snapshot when reusable fields are available."""
+    """
+    将当前的复用配置写入codex配置目录
+    """
     payload: dict[str, Any] = {}
     if reused.model:
         payload["model"] = reused.model

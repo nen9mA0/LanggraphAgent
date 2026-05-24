@@ -19,7 +19,7 @@ def utc_now_iso() -> str:
 
 @dataclass(slots=True)
 class TokenUsageSnapshot:
-    """Token usage counters for a single agent turn."""
+    """每轮对话的token量统计"""
 
     input_tokens: int = 0
     output_tokens: int = 0
@@ -64,7 +64,7 @@ class TokenUsageSnapshot:
 
 @dataclass(slots=True)
 class AgentOutputEvent:
-    """A single streaming event emitted by a managed agent runtime."""
+    """Agent运行时发出的一个流事件"""
 
     event_type: EventType
     content: str = ""
@@ -102,7 +102,7 @@ class AgentOutputEvent:
 
 @dataclass(slots=True)
 class InterNodeMessage:
-    """A mailbox message exchanged between LangGraph nodes."""
+    """Langgraph节点间传输的mailbox消息"""
 
     sender: str
     recipient: str
@@ -137,7 +137,19 @@ class InterNodeMessage:
 
 @dataclass(slots=True)
 class TurnResult:
-    """Final result for a single agent turn."""
+    """
+    记录一轮对话的最终结果
+    turn_id: 对话id
+    status: 当前对话状态
+    started_at: 对话开始时间
+    completed_at: 对话结束时间
+    session_id: 会话ID
+    final_output: 会话最终对外部node输出的信息
+    error: 错误
+    usage: token用量记录
+    events: Agent输出Event列表
+    prompt: 输入的prompt
+    """
 
     turn_id: str
     status: TurnStatus

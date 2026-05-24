@@ -33,7 +33,14 @@ class CodexRuntime(ManagedAgentRuntime):
         self._item_text_buffers: dict[str, str] = {}
 
     def _start_impl(self) -> None:
-        """Start the Codex app-server and initialize or resume a thread."""
+        """
+        启动Agent，命令为codex app-server --listen stdio://
+        * 启动子进程并配置标准输入输出线程
+        * 发送initialize request
+        * 发送initialized notify
+        * 若当前runtime有session_id则使用thread/resume继续会话
+        * 否则用thread/start启动新会话，并保存session_id
+        """
         executable = self._resolve_executable()
         process = subprocess.Popen(
             [executable, "app-server", "--listen", "stdio://", *self._config_override_args(), *self.config.cli_args],
@@ -107,7 +114,7 @@ class CodexRuntime(ManagedAgentRuntime):
         return executable
 
     def _send_input_impl(self, prompt: str, turn_id: str) -> None:
-        """Send a new ``turn/start`` request to the active Codex thread."""
+        """发送新的turn/start请求"""
         if not self._thread_id:
             raise RuntimeError("codex thread not initialized")
         self._active_turn_id = turn_id
@@ -124,11 +131,11 @@ class CodexRuntime(ManagedAgentRuntime):
         self._active_remote_turn_id = self._extract_turn_id(response)
 
     def _rpc_notify(self, method: str, params: dict[str, Any] | None = None) -> None:
-        """Send a JSON-RPC notification to the Codex app-server."""
+        """向codex发送一个JSON-RPC notification"""
         self._write_rpc({"jsonrpc": "2.0", "method": method, "params": params or {}})
 
     def _rpc_request(self, method: str, params: dict[str, Any], timeout: float) -> dict[str, Any]:
-        """Send a JSON-RPC request and wait for its response."""
+        """向codex server发送一个JSONRPC request并且等待回应"""
         with self._rpc_lock:
             self._request_id += 1
             request_id = self._request_id
@@ -146,7 +153,7 @@ class CodexRuntime(ManagedAgentRuntime):
         return payload.get("result", {})
 
     def _write_rpc(self, payload: dict[str, Any]) -> None:
-        """Write one JSON-RPC message to the Codex stdin transport."""
+        """从标准输入向codex写入一段JSONRPC请求"""
         if self._process is None or self._process.stdin is None or self._process.stdin.closed:
             raise RuntimeError("codex process is not running")
         self._process.stdin.write(json.dumps(payload, ensure_ascii=True))
@@ -154,7 +161,12 @@ class CodexRuntime(ManagedAgentRuntime):
         self._process.stdin.flush()
 
     def _reader_loop(self) -> None:
-        """Read stdout lines from Codex and dispatch responses, notifications, or server requests."""
+        """
+        读取输出行，并根据输出内容处理
+        * 包含id和result/error  _handle_response
+        * 包含id和method  _handle_server_request
+        * 包含method  _handle_notification
+        """
         process = self._process
         if process is None or process.stdout is None:
             return
@@ -177,7 +189,7 @@ class CodexRuntime(ManagedAgentRuntime):
                 self._pending.clear()
 
     def _stderr_loop(self) -> None:
-        """Capture a bounded tail of Codex stderr output for diagnostics."""
+        """读取stderr行"""
         process = self._process
         if process is None or process.stderr is None:
             return
@@ -187,7 +199,7 @@ class CodexRuntime(ManagedAgentRuntime):
                 self._stderr_tail.append(text)
 
     def _handle_response(self, payload: dict[str, Any]) -> None:
-        """Resolve a pending JSON-RPC request from a response payload."""
+        """处理普通输出"""
         request_id = int(payload["id"])
         with self._rpc_lock:
             response_queue = self._pending.pop(request_id, None)
@@ -202,7 +214,12 @@ class CodexRuntime(ManagedAgentRuntime):
             response_queue.put({"result": payload.get("result", {})})
 
     def _handle_server_request(self, payload: dict[str, Any]) -> None:
-        """Handle JSON-RPC requests initiated by the Codex app-server."""
+        """
+        处理带method的输出
+        * commandExecution/requestApproval
+        * tool/requestInput
+        * item/tool/requestUserInput
+        """
         request_id = payload.get("id")
         method = str(payload.get("method", ""))
         params = payload.get("params", {}) or {}
@@ -233,7 +250,13 @@ class CodexRuntime(ManagedAgentRuntime):
         self._write_rpc({"jsonrpc": "2.0", "id": request_id, "result": result})
 
     def _handle_notification(self, payload: dict[str, Any]) -> None:
-        """Handle Codex notifications and convert them into runtime events."""
+        """
+        处理notification输出
+        * turn/started
+        * turn/updated turn/stream
+        * turn/completed
+        * turn/failed
+        """
         method = str(payload.get("method", ""))
         params = payload.get("params", {}) or {}
         if method == "turn/started":
