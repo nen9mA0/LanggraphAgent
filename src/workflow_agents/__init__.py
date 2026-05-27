@@ -1,4 +1,4 @@
-from .config_reuse import ReusedAgentConfig, ReusedConfigSnapshot, build_reused_agent_config, materialize_reused_agent_config
+from .config_reuse import ReusedAgentConfig, ReusedConfigSnapshot, apply_reused_agent_config, build_reused_agent_config, write_reused_agent_config
 from .node import AgentNode, build_agent_node
 from .registry import AgentRuntimeRegistry
 from .state import AgentGraphState
@@ -15,7 +15,8 @@ __all__ = [
     "ReusedConfigSnapshot",
     "TokenUsageSnapshot",
     "TurnResult",
+    "apply_reused_agent_config",
     "build_reused_agent_config",
-    "materialize_reused_agent_config",
     "build_agent_node",
+    "write_reused_agent_config",
 ]

@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from ..config_reuse import materialize_reused_agent_config
+from ..config_reuse import apply_reused_agent_config, build_reused_agent_config, write_reused_agent_config
 from ..node import AgentNode
 from ..registry import AgentRuntimeRegistry
 from ..state import AgentGraphState
@@ -51,18 +51,45 @@ def ensure_demo_agent_directories(working_directory: str) -> dict[str, Path]:
         agent_type="claude",
         default_system_prompt="You are the writer node. Produce a concise draft for the reviewer node.",
     )
-    materialize_reused_agent_config(agent_type="claude", source_working_directory=root, target_directory=claude_root, reuse_fields=("model",), include_home_defaults=False)
+    write_reused_agent_config(
+        agent_type="claude",
+        target_directory=claude_root,
+        reused_config=build_reused_agent_config(
+            agent_type="claude",
+            working_directory=claude_root,
+            reuse_fields=("model",),
+            include_home_defaults=False,
+        ),
+    )
     _ensure_claude_sdk_template_files(
         claude_sdk_root,
         default_system_prompt="You are the writer node. Produce a concise draft for the reviewer node.",
     )
-    materialize_reused_agent_config(agent_type="claude_sdk", source_working_directory=root, target_directory=claude_sdk_root, reuse_fields=("model",), include_home_defaults=False)
+    write_reused_agent_config(
+        agent_type="claude_sdk",
+        target_directory=claude_sdk_root,
+        reused_config=build_reused_agent_config(
+            agent_type="claude_sdk",
+            working_directory=claude_sdk_root,
+            reuse_fields=("model",),
+            include_home_defaults=False,
+        ),
+    )
     _ensure_template_files(
         codex_root,
         agent_type="codex",
         default_system_prompt="You are the reviewer node. Review the writer output and return the final answer.",
     )
-    materialize_reused_agent_config(agent_type="codex", source_working_directory=root, target_directory=codex_root, reuse_fields=("model",), include_home_defaults=False)
+    write_reused_agent_config(
+        agent_type="codex",
+        target_directory=codex_root,
+        reused_config=build_reused_agent_config(
+            agent_type="codex",
+            working_directory=codex_root,
+            reuse_fields=("model",),
+            include_home_defaults=False,
+        ),
+    )
     return {"claude": claude_root, "claude_sdk": claude_sdk_root, "codex": codex_root}
 
 
@@ -155,11 +182,19 @@ def _build_writer_config(*, working_directory: str, claude_backend: str) -> Agen
         ),
     }
     if claude_backend == "claude":
-        return AgentNodeConfig.from_provider_defaults(
-            agent_type="claude",
-            executable_path="claude",
-            cli_args=tuple(str(item) for item in _load_optional_json_list(writer_root / "cli_args.json")),
-            **common_kwargs,
+        return AgentNodeConfig(
+            **apply_reused_agent_config(
+                reused_config=build_reused_agent_config(
+                    agent_type="claude",
+                    working_directory=writer_root,
+                    reuse_fields=("model",),
+                    include_home_defaults=True,
+                ),
+                agent_type="claude",
+                executable_path="claude",
+                cli_args=tuple(str(item) for item in _load_optional_json_list(writer_root / "cli_args.json")),
+                **common_kwargs,
+            )
         )
 
     python_executable = _load_text(writer_root / "python_executable.txt")
@@ -169,38 +204,54 @@ def _build_writer_config(*, working_directory: str, claude_backend: str) -> Agen
         )
     sdk_module = _load_text(writer_root / "sdk_module.txt") or "claude_agent_sdk"
     cli_path = _load_text(writer_root / "cli_path.txt")
-    return AgentNodeConfig.from_provider_defaults(
-        agent_type="claude_sdk",
-        executable_path=python_executable,
-        runtime_options={
-            "python_executable": python_executable,
-            "sdk_module": sdk_module,
-            "cli_path": cli_path or None,
-            "client_options": _load_optional_json(writer_root / "client_options.json"),
-        },
-        **common_kwargs,
+    return AgentNodeConfig(
+        **apply_reused_agent_config(
+            reused_config=build_reused_agent_config(
+                agent_type="claude_sdk",
+                working_directory=writer_root,
+                reuse_fields=("model",),
+                include_home_defaults=True,
+            ),
+            agent_type="claude_sdk",
+            executable_path=python_executable,
+            runtime_options={
+                "python_executable": python_executable,
+                "sdk_module": sdk_module,
+                "cli_path": cli_path or None,
+                "client_options": _load_optional_json(writer_root / "client_options.json"),
+            },
+            **common_kwargs,
+        )
     )
 
 
 def _build_reviewer_config(*, working_directory: str) -> AgentNodeConfig:
     root = Path(working_directory).resolve()
     codex_root = default_agent_config_directory(working_directory=root, name="reviewer", folder_name=CODEX_FOLDER)
-    return AgentNodeConfig.from_provider_defaults(
-        name="reviewer",
-        folder_name=CODEX_FOLDER,
-        agent_type="codex",
-        executable_path="codex",
-        working_directory=working_directory,
-        system_prompt=_load_text(codex_root / "system_prompt.txt"),
-        cli_args=tuple(str(item) for item in _load_optional_json_list(codex_root / "cli_args.json")),
-        env={str(k): str(v) for k, v in _load_optional_json(codex_root / "env.json").items()},
-        context_window_tokens=200_000,
-        persist_runtime_history=False,
-        persist_node_mailboxes=True,
-        prompt_prefix=(
-            "Review the writer output and return the final answer only. "
-            "Do not include internal execution details."
-        ),
+    return AgentNodeConfig(
+        **apply_reused_agent_config(
+            reused_config=build_reused_agent_config(
+                agent_type="codex",
+                working_directory=codex_root,
+                reuse_fields=("model",),
+                include_home_defaults=True,
+            ),
+            name="reviewer",
+            folder_name=CODEX_FOLDER,
+            agent_type="codex",
+            executable_path="codex",
+            working_directory=working_directory,
+            system_prompt=_load_text(codex_root / "system_prompt.txt"),
+            cli_args=tuple(str(item) for item in _load_optional_json_list(codex_root / "cli_args.json")),
+            env={str(k): str(v) for k, v in _load_optional_json(codex_root / "env.json").items()},
+            context_window_tokens=200_000,
+            persist_runtime_history=False,
+            persist_node_mailboxes=True,
+            prompt_prefix=(
+                "Review the writer output and return the final answer only. "
+                "Do not include internal execution details."
+            ),
+        )
     )
 
 

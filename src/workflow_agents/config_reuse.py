@@ -72,14 +72,34 @@ def build_reused_agent_config(
     raise ValueError(f"unsupported agent_type for config reuse: {agent_type}")
 
 
-def materialize_reused_agent_config(
+def apply_reused_agent_config(
+    *,
+    reused_config: ReusedAgentConfig,
+    reuse_fields: tuple[ReuseField, ...] = ("model",),
+    **kwargs: Any,
+) -> dict[str, Any]:
+    """Apply one reused-config snapshot onto AgentNodeConfig constructor kwargs."""
+    payload = dict(kwargs)
+    if not payload.get("model"):
+        payload["model"] = reused_config.model
+
+    runtime_options = dict(reused_config.runtime_options)
+    if reused_config.skills:
+        runtime_options.setdefault("reused_skills", list(reused_config.skills))
+    if reused_config.mcp:
+        runtime_options.setdefault("reused_mcp", dict(reused_config.mcp))
+    if "auth" in reuse_fields and reused_config.auth:
+        runtime_options.setdefault("reused_auth", dict(reused_config.auth))
+    runtime_options.update(dict(payload.get("runtime_options") or {}))
+    payload["runtime_options"] = runtime_options
+    return payload
+
+
+def write_reused_agent_config(
     *,
     agent_type: str,
-    source_working_directory: str | Path,
     target_directory: str | Path,
-    reuse_fields: tuple[ReuseField, ...] = ("model",),
-    home_directory: str | Path | None = None,
-    include_home_defaults: bool = True,
+    reused_config: ReusedAgentConfig,
     overwrite: bool = False,
 ) -> ReusedConfigSnapshot:
     """
@@ -92,28 +112,21 @@ def materialize_reused_agent_config(
         [optional] include_home_defaults: 是否将home目录的agent配置加入配置合并列表
         [optional] overwrite: 是否覆盖原有配置
     """
-    reused = build_reused_agent_config(
-        agent_type=agent_type,
-        working_directory=source_working_directory,
-        reuse_fields=reuse_fields,
-        home_directory=home_directory,
-        include_home_defaults=include_home_defaults,
-    )
     target_root = Path(target_directory).resolve()
     target_root.mkdir(parents=True, exist_ok=True)
 
     if agent_type in {"claude", "claude_sdk"}:
-        written_files = _write_claude_snapshot(target_root, reused, overwrite=overwrite)
+        written_files = _write_claude_snapshot(target_root, reused_config, overwrite=overwrite)
         skipped_fields: list[str] = []
     elif agent_type == "codex":
-        written_files, skipped_fields = _write_codex_snapshot(target_root, reused, overwrite=overwrite)
+        written_files, skipped_fields = _write_codex_snapshot(target_root, reused_config, overwrite=overwrite)
     else:
         raise ValueError(f"unsupported agent_type for config materialization: {agent_type}")
 
     return ReusedConfigSnapshot(
         agent_type=agent_type,
         target_directory=target_root,
-        reused_config=reused,
+        reused_config=reused_config,
         written_files=written_files,
         skipped_fields=skipped_fields,
     )
@@ -172,7 +185,7 @@ def _load_codex_reused_config(
     会合并下列几个配置，后面的会覆盖前面的
       * 若指定了include_home_defaults会合并home/.codex下的配置
       * workdir/.codex 下的config.toml和auth.json
-    根据情况保留下列几个关键字的配置： model base_url model_provider model_reasoning_effort skills mcp
+    根据情况保留下列几个关键字的配置： model base_url model_reasoning_effort skills mcp
     """
     project_config = workdir / ".codex" / "config.toml"
     project_auth = workdir / ".codex" / "auth.json"
@@ -182,23 +195,23 @@ def _load_codex_reused_config(
     merged: dict[str, Any] = {}
     merged_auth: dict[str, Any] = {}
     candidate_paths = []
-    auth_candidate_paths = []
+    auth_candidate_paths: list[Path] = []
     if include_home_defaults:
         candidate_paths.append(user_config)
-        auth_candidate_paths.append(user_auth)
     candidate_paths.append(project_config)
-    auth_candidate_paths.append(project_auth)
     for path in candidate_paths:
         merged.update(_read_simple_toml(path))
-    for path in auth_candidate_paths:
-        merged_auth.update(_read_json_object(path))
+    if "auth" in reuse_fields:
+        if include_home_defaults:
+            auth_candidate_paths.append(user_auth)
+        auth_candidate_paths.append(project_auth)
+        for path in auth_candidate_paths:
+            merged_auth.update(_read_json_object(path))
 
     model = str(merged.get("model", "") or "") if "model" in reuse_fields else ""
     runtime_options: dict[str, Any] = {}
     if "model" in reuse_fields and "base_url" in merged:
         runtime_options["reused_base_url"] = merged["base_url"]
-    if "model" in reuse_fields and "model_provider" in merged:
-        runtime_options["reused_model_provider"] = merged["model_provider"]
     if "model" in reuse_fields and "model_reasoning_effort" in merged:
         runtime_options["reused_model_reasoning_effort"] = merged["model_reasoning_effort"]
     skills = list(merged.get("skills", []) or []) if "skills" in reuse_fields and isinstance(merged.get("skills"), list) else []
@@ -276,8 +289,6 @@ def _write_codex_snapshot(root: Path, reused: ReusedAgentConfig, *, overwrite: b
         payload["model"] = reused.model
     if "reused_base_url" in reused.runtime_options:
         payload["base_url"] = reused.runtime_options["reused_base_url"]
-    if "reused_model_provider" in reused.runtime_options:
-        payload["model_provider"] = reused.runtime_options["reused_model_provider"]
     if "reused_model_reasoning_effort" in reused.runtime_options:
         payload["model_reasoning_effort"] = reused.runtime_options["reused_model_reasoning_effort"]
     if reused.skills:

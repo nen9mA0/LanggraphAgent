@@ -33,7 +33,7 @@ def default_agent_config_directory(*, working_directory: str | Path, name: str, 
 
 @dataclass(slots=True)
 class TokenUsageSnapshot:
-    """每轮对话的token量统计"""
+    """Token usage captured for one turn."""
 
     input_tokens: int = 0
     output_tokens: int = 0
@@ -78,7 +78,7 @@ class TokenUsageSnapshot:
 
 @dataclass(slots=True)
 class AgentOutputEvent:
-    """Agent运行时发出的一个流事件"""
+    """One streamed event emitted by an agent runtime."""
 
     event_type: EventType
     content: str = ""
@@ -116,7 +116,7 @@ class AgentOutputEvent:
 
 @dataclass(slots=True)
 class InterNodeMessage:
-    """Langgraph节点间传输的mailbox消息"""
+    """Mailbox message exchanged between graph nodes."""
 
     sender: str
     recipient: str
@@ -151,19 +151,7 @@ class InterNodeMessage:
 
 @dataclass(slots=True)
 class TurnResult:
-    """
-    记录一轮对话的最终结果
-    turn_id: 对话id
-    status: 当前对话状态
-    started_at: 对话开始时间
-    completed_at: 对话结束时间
-    session_id: 会话ID
-    final_output: 会话最终对外部node输出的信息
-    error: 错误
-    usage: token用量记录
-    events: Agent输出Event列表
-    prompt: 输入的prompt
-    """
+    """Final result captured for one agent turn."""
 
     turn_id: str
     status: TurnStatus
@@ -210,31 +198,7 @@ class TurnResult:
 
 @dataclass(slots=True)
 class AgentNodeConfig:
-    """
-    AgentNode配置
-    Fields:
-        name: node名称
-        agent_type: agent类型
-        working_directory: agent工作目录
-        [optional] executable_path: agent可执行文件路径
-        [optional] system_prompt: agent的system_prompt
-        [optional] model: agent使用的模型
-        [optional] cli_args: 传给agent的CLI参数
-        [optional] env: 传给agent的环境变量
-        [optional] context_window_tokens: 上下文窗口长度
-        [optional] max_turns: 对话轮数最大值
-        [optional] turn_timeout_seconds: 每轮对话超时时间
-        [optional] startup_timeout_seconds: agent启动超时时间
-        [optional] semantic_inactivity_timeout_seconds: 后端无直接响应超时时间
-        [optional] auto_start: 第一次使用时自动启动runtime
-        [optional] targets: Langgraph中的下游节点
-        [optional] prompt_prefix: 额外的prompt前缀
-        [optional] folder_name: 指定.workflow/agent下配置的文件夹名
-        [optional] persist_runtime_history: 是否保存runtime的所有对话历史
-        [optional] persist_node_mailboxes: 是否保存每个node的mailbox历史（与其他node交互的历史）
-        [optional] runtime_options: 额外的runtime配置
-        [optional] instance_key: runtime实例的标识，可以由Registry保存并复用
-    """
+    """Configuration for one agent-backed workflow node."""
 
     name: str
     agent_type: AgentKind
@@ -257,56 +221,6 @@ class AgentNodeConfig:
     persist_node_mailboxes: bool = True
     runtime_options: dict[str, Any] = field(default_factory=dict)
     instance_key: str = field(default_factory=lambda: uuid4().hex)
-
-    @classmethod
-    def from_provider_defaults(
-        cls,
-        *,
-        home_directory: str | Path | None = None,
-        reuse_fields: tuple[str, ...] = ("model",),
-        **kwargs: Any,
-    ) -> "AgentNodeConfig":
-        """
-        根据参数由本地agent配置复用一套配置到当前AgentNode
-        Args:
-            cls: 回调函数，在函数最后调用，参数为kwargs
-            [optional] home_directory: home目录，用于搜索agent默认配置。默认使用Path.home获取
-            [optional] reuse_fields: 哪些配置需要复用
-            [optional] provider_config_directory: 目标Agent的配置文件夹
-            [optional] kwargs: 主要有下列键值作用
-                agent_type: agent类型
-                working_directory: 目标Agent的配置文件夹
-                model: agent使用的模型
-                runtime_options: 作为返回值返回一些最终的配置项（目前为是否复用skill和mcp）
-        """
-        from .config_reuse import build_reused_agent_config
-
-        agent_type = kwargs["agent_type"]
-        config_directory = default_agent_config_directory(
-            working_directory=kwargs["working_directory"],
-            name=str(kwargs["name"]),
-            folder_name=kwargs.get("folder_name"),
-        )
-        reused = build_reused_agent_config(
-            agent_type=agent_type,
-            working_directory=config_directory,
-            reuse_fields=reuse_fields,
-            home_directory=home_directory,
-            include_home_defaults=True,
-        )
-        if not kwargs.get("model"):
-            kwargs["model"] = reused.model
-
-        runtime_options = dict(reused.runtime_options)
-        if reused.skills:
-            runtime_options.setdefault("reused_skills", list(reused.skills))
-        if reused.mcp:
-            runtime_options.setdefault("reused_mcp", dict(reused.mcp))
-        if reused.auth:
-            runtime_options.setdefault("reused_auth", dict(reused.auth))
-        runtime_options.update(dict(kwargs.get("runtime_options") or {}))
-        kwargs["runtime_options"] = runtime_options
-        return cls(**kwargs)
 
     def normalized_working_directory(self) -> Path:
         """Return the absolute working directory for the agent."""

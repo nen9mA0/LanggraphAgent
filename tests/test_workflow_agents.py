@@ -11,7 +11,15 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from workflow_agents import AgentNode, AgentNodeConfig, AgentRuntimeRegistry, InterNodeMessage
+from workflow_agents import (
+    AgentNode,
+    AgentNodeConfig,
+    AgentRuntimeRegistry,
+    InterNodeMessage,
+    apply_reused_agent_config,
+    build_reused_agent_config,
+    write_reused_agent_config,
+)
 
 
 def create_cmd_wrapper(directory: Path, name: str, script_content: str) -> str:
@@ -658,7 +666,7 @@ class WorkflowAgentsTestCase(unittest.TestCase):
             root = Path(temp_dir)
             (root / ".codex").mkdir(parents=True, exist_ok=True)
             (root / ".codex" / "config.toml").write_text(
-                'model = "gpt-5-codex"\nbase_url = "https://codex.example.test"\nmodel_provider = "openai"\nmodel_reasoning_effort = "high"\n',
+                'model = "gpt-5-codex"\nbase_url = "https://codex.example.test"\nmodel_reasoning_effort = "high"\n',
                 encoding="utf-8",
             )
             (root / ".codex" / "auth.json").write_text(
@@ -669,7 +677,6 @@ class WorkflowAgentsTestCase(unittest.TestCase):
             reused = build_reused_agent_config(agent_type="codex", working_directory=root, home_directory=root / "home")
             self.assertEqual(reused.model, "gpt-5-codex")
             self.assertEqual(reused.runtime_options["reused_base_url"], "https://codex.example.test")
-            self.assertEqual(reused.runtime_options["reused_model_provider"], "openai")
             self.assertEqual(reused.runtime_options["reused_model_reasoning_effort"], "high")
             self.assertEqual(reused.auth, {"refresh_token": "secret-token"})
             self.assertEqual(reused.metadata["source_kind"], "codex_config_toml")
@@ -695,7 +702,7 @@ class WorkflowAgentsTestCase(unittest.TestCase):
             self.assertEqual(reused.skills, ["skill-a", "skill-b"])
             self.assertEqual(reused.mcp, {"server": "x"})
 
-    def test_agent_node_config_from_provider_defaults_reuses_model(self) -> None:
+    def test_apply_reused_agent_config_reuses_model(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             agent_root = root / ".workflow" / "agent" / "writer"
@@ -705,18 +712,25 @@ class WorkflowAgentsTestCase(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            config = AgentNodeConfig.from_provider_defaults(
-                name="writer",
+            reused = build_reused_agent_config(
                 agent_type="claude",
-                working_directory=root,
-                executable_path="claude",
+                working_directory=agent_root,
                 home_directory=root / "home",
+            )
+            config = AgentNodeConfig(
+                **apply_reused_agent_config(
+                    name="writer",
+                    agent_type="claude",
+                    working_directory=root,
+                    executable_path="claude",
+                    reused_config=reused,
+                )
             )
             self.assertEqual(config.model, "claude-default")
             self.assertNotIn("reused_skills", config.runtime_options)
             self.assertNotIn("reused_mcp", config.runtime_options)
 
-    def test_agent_node_config_from_provider_defaults_can_enable_skills_and_mcp_reuse(self) -> None:
+    def test_apply_reused_agent_config_can_enable_skills_and_mcp_reuse(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             agent_root = root / ".workflow" / "agent" / "writer"
@@ -726,44 +740,56 @@ class WorkflowAgentsTestCase(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            config = AgentNodeConfig.from_provider_defaults(
-                name="writer",
+            reused = build_reused_agent_config(
                 agent_type="claude",
-                working_directory=root,
-                executable_path="claude",
+                working_directory=agent_root,
                 home_directory=root / "home",
                 reuse_fields=("model", "skills", "mcp"),
+            )
+            config = AgentNodeConfig(
+                **apply_reused_agent_config(
+                    name="writer",
+                    agent_type="claude",
+                    working_directory=root,
+                    executable_path="claude",
+                    reused_config=reused,
+                    reuse_fields=("model", "skills", "mcp"),
+                )
             )
             self.assertEqual(config.model, "claude-default")
             self.assertEqual(config.runtime_options["reused_skills"], ["skill-a"])
             self.assertEqual(config.runtime_options["reused_mcp"], {"server": "x"})
 
-    def test_agent_node_config_from_provider_defaults_allows_explicit_override(self) -> None:
+    def test_apply_reused_agent_config_allows_explicit_override(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             agent_root = root / ".workflow" / "agent" / "reviewer"
             (agent_root / ".codex").mkdir(parents=True, exist_ok=True)
             (agent_root / ".codex" / "config.toml").write_text(
-                'model = "gpt-5-codex"\nmodel_provider = "openai"\n',
+                'model = "gpt-5-codex"\n',
                 encoding="utf-8",
             )
 
-            config = AgentNodeConfig.from_provider_defaults(
-                name="reviewer",
+            reused = build_reused_agent_config(
                 agent_type="codex",
-                working_directory=root,
-                executable_path="codex",
-                model="custom-model",
-                runtime_options={"reused_model_provider": "custom-provider", "x": 1},
+                working_directory=agent_root,
                 home_directory=root / "home",
             )
+            config = AgentNodeConfig(
+                **apply_reused_agent_config(
+                    name="reviewer",
+                    agent_type="codex",
+                    working_directory=root,
+                    executable_path="codex",
+                    reused_config=reused,
+                    model="custom-model",
+                    runtime_options={"x": 1},
+                )
+            )
             self.assertEqual(config.model, "custom-model")
-            self.assertEqual(config.runtime_options["reused_model_provider"], "custom-provider")
             self.assertEqual(config.runtime_options["x"], 1)
 
-    def test_materialize_reused_agent_config_writes_minimal_claude_snapshot(self) -> None:
-        from workflow_agents.config_reuse import materialize_reused_agent_config
-
+    def test_write_reused_agent_config_writes_minimal_claude_snapshot(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             source_root = root / "project"
@@ -774,26 +800,24 @@ class WorkflowAgentsTestCase(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            snapshot = materialize_reused_agent_config(
+            snapshot = write_reused_agent_config(
                 agent_type="claude",
-                source_working_directory=source_root,
                 target_directory=target_root,
+                reused_config=build_reused_agent_config(agent_type="claude", working_directory=source_root),
             )
             config_path = target_root / ".claude" / "settings.json"
             self.assertEqual(snapshot.agent_type, "claude")
             self.assertEqual(snapshot.written_files, [config_path.resolve()])
             self.assertEqual(json.loads(config_path.read_text(encoding="utf-8")), {"model": "claude-opus"})
 
-    def test_materialize_reused_agent_config_writes_minimal_codex_snapshot(self) -> None:
-        from workflow_agents.config_reuse import materialize_reused_agent_config
-
+    def test_write_reused_agent_config_writes_minimal_codex_snapshot(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             source_root = root / "project"
             target_root = root / "agent" / "codex_reviewer"
             (source_root / ".codex").mkdir(parents=True, exist_ok=True)
             (source_root / ".codex" / "config.toml").write_text(
-                'model = "gpt-5-codex"\nbase_url = "https://codex.example.test"\nmodel_provider = "openai"\nmodel_reasoning_effort = "high"\n',
+                'model = "gpt-5-codex"\nbase_url = "https://codex.example.test"\nmodel_reasoning_effort = "high"\n',
                 encoding="utf-8",
             )
             (source_root / ".codex" / "auth.json").write_text(
@@ -801,26 +825,55 @@ class WorkflowAgentsTestCase(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            snapshot = materialize_reused_agent_config(
+            snapshot = write_reused_agent_config(
                 agent_type="codex",
-                source_working_directory=source_root,
                 target_directory=target_root,
-                home_directory=root / "home",
+                reused_config=build_reused_agent_config(
+                    agent_type="codex",
+                    working_directory=source_root,
+                    home_directory=root / "home",
+                ),
             )
             config_path = target_root / ".codex" / "config.toml"
             auth_path = target_root / ".codex" / "auth.json"
             self.assertEqual(snapshot.agent_type, "codex")
-            self.assertEqual(snapshot.written_files, [config_path.resolve(), auth_path.resolve()])
+            self.assertEqual(snapshot.written_files, [config_path.resolve()])
             content = config_path.read_text(encoding="utf-8")
             self.assertIn('model = "gpt-5-codex"', content)
             self.assertIn('base_url = "https://codex.example.test"', content)
-            self.assertIn('model_provider = "openai"', content)
             self.assertIn('model_reasoning_effort = "high"', content)
+            self.assertFalse(auth_path.exists())
+
+    def test_write_reused_agent_config_writes_codex_auth_only_when_requested(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source_root = root / "project"
+            target_root = root / "agent" / "codex_reviewer"
+            (source_root / ".codex").mkdir(parents=True, exist_ok=True)
+            (source_root / ".codex" / "config.toml").write_text('model = "gpt-5-codex"\n', encoding="utf-8")
+            (source_root / ".codex" / "auth.json").write_text(
+                json.dumps({"refresh_token": "secret-token"}, ensure_ascii=True),
+                encoding="utf-8",
+            )
+
+            snapshot = write_reused_agent_config(
+                agent_type="codex",
+                target_directory=target_root,
+                reused_config=build_reused_agent_config(
+                    agent_type="codex",
+                    working_directory=source_root,
+                    home_directory=root / "home",
+                    reuse_fields=("model", "auth"),
+                ),
+            )
+            auth_path = target_root / ".codex" / "auth.json"
+            self.assertEqual(
+                snapshot.written_files,
+                [target_root.joinpath(".codex", "config.toml").resolve(), auth_path.resolve()],
+            )
             self.assertEqual(json.loads(auth_path.read_text(encoding="utf-8")), {"refresh_token": "secret-token"})
 
-    def test_materialize_reused_agent_config_can_ignore_home_defaults(self) -> None:
-        from workflow_agents.config_reuse import materialize_reused_agent_config
-
+    def test_write_reused_agent_config_can_ignore_home_defaults(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             source_root = root / "project"
@@ -831,12 +884,15 @@ class WorkflowAgentsTestCase(unittest.TestCase):
             (source_root / ".codex").mkdir(parents=True, exist_ok=True)
             (source_root / ".codex" / "config.toml").write_text('model = "gpt-5-codex"\n', encoding="utf-8")
 
-            snapshot = materialize_reused_agent_config(
+            snapshot = write_reused_agent_config(
                 agent_type="codex",
-                source_working_directory=source_root,
                 target_directory=target_root,
-                home_directory=home_root,
-                include_home_defaults=False,
+                reused_config=build_reused_agent_config(
+                    agent_type="codex",
+                    working_directory=source_root,
+                    home_directory=home_root,
+                    include_home_defaults=False,
+                ),
             )
             content = target_root.joinpath(".codex", "config.toml").read_text(encoding="utf-8")
             self.assertEqual(snapshot.agent_type, "codex")
@@ -900,7 +956,6 @@ class WorkflowAgentsTestCase(unittest.TestCase):
                 runtime_options={
                     "reused_skills": ["skill-a", "skill-b"],
                     "reused_mcp": {"demo": {"command": "demo-mcp", "args": ["--stdio"]}},
-                    "reused_model_provider": "openai",
                     "reused_model_reasoning_effort": "high",
                 },
             )
@@ -910,7 +965,6 @@ class WorkflowAgentsTestCase(unittest.TestCase):
             joined = " ".join(args)
             self.assertIn("skills.config=", joined)
             self.assertIn("mcp_servers=", joined)
-            self.assertIn("model_provider=", joined)
             self.assertIn("model_reasoning_effort=", joined)
             self.assertIn('"skill-a"', joined)
             self.assertIn('"demo"', joined)
@@ -933,7 +987,6 @@ class WorkflowAgentsTestCase(unittest.TestCase):
                 model="gpt-5-codex",
                 runtime_options={
                     "reused_base_url": "https://codex.example.test",
-                    "reused_model_provider": "openai",
                     "reused_model_reasoning_effort": "high",
                     "reused_auth": {"refresh_token": "secret-token"},
                 },
@@ -988,7 +1041,7 @@ class WorkflowAgentsTestCase(unittest.TestCase):
             self.assertTrue(Path(payload["mcp_config_path"]).exists())
             self.assertTrue(Path(payload["env"]["CLAUDE_CONFIG_DIR"]).joinpath("skills", "writer_skill", "SKILL.md").exists())
 
-    def test_agent_node_config_from_provider_defaults_prefers_local_snapshot_directory(self) -> None:
+    def test_apply_reused_agent_config_prefers_local_snapshot_directory(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             project_root = root / "project"
@@ -999,11 +1052,17 @@ class WorkflowAgentsTestCase(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            config = AgentNodeConfig.from_provider_defaults(
-                name="writer",
-                agent_type="claude",
-                working_directory=project_root,
-                executable_path="claude",
+            config = AgentNodeConfig(
+                **apply_reused_agent_config(
+                    name="writer",
+                    agent_type="claude",
+                    working_directory=project_root,
+                    executable_path="claude",
+                    reused_config=build_reused_agent_config(
+                        agent_type="claude",
+                        working_directory=agent_root,
+                    ),
+                )
             )
             self.assertEqual(config.model, "claude-local-snapshot")
 
@@ -1066,7 +1125,7 @@ class WorkflowAgentsTestCase(unittest.TestCase):
             root = Path(temp_dir)
             (root / ".codex").mkdir(parents=True, exist_ok=True)
             (root / ".codex" / "config.toml").write_text(
-                'model = "gpt-5-codex"\nbase_url = "https://codex.example.test"\nmodel_provider = "openai"\nmodel_reasoning_effort = "high"\n',
+                'model = "gpt-5-codex"\nbase_url = "https://codex.example.test"\nmodel_reasoning_effort = "high"\n',
                 encoding="utf-8",
             )
             (root / ".codex" / "auth.json").write_text(
@@ -1079,8 +1138,37 @@ class WorkflowAgentsTestCase(unittest.TestCase):
             self.assertEqual(config.folder_name, "codex_demo")
             self.assertEqual(config.model, "gpt-5-codex")
             self.assertEqual(config.runtime_options["reused_base_url"], "https://codex.example.test")
-            self.assertEqual(config.runtime_options["reused_model_provider"], "openai")
             self.assertEqual(config.runtime_options["reused_model_reasoning_effort"], "high")
+            self.assertNotIn("reused_auth", config.runtime_options)
+
+    def test_apply_reused_agent_config_reuses_codex_auth_only_when_requested(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            agent_root = root / ".workflow" / "agent" / "reviewer"
+            (agent_root / ".codex").mkdir(parents=True, exist_ok=True)
+            (agent_root / ".codex" / "config.toml").write_text('model = "gpt-5-codex"\n', encoding="utf-8")
+            (agent_root / ".codex" / "auth.json").write_text(
+                json.dumps({"refresh_token": "secret-token"}, ensure_ascii=True),
+                encoding="utf-8",
+            )
+
+            config = AgentNodeConfig(
+                **apply_reused_agent_config(
+                    name="reviewer",
+                    agent_type="codex",
+                    working_directory=root,
+                    executable_path="codex",
+                    reused_config=build_reused_agent_config(
+                        agent_type="codex",
+                        working_directory=agent_root,
+                        home_directory=root / "home",
+                        reuse_fields=("model", "auth"),
+                    ),
+                    reuse_fields=("model", "auth"),
+                )
+            )
+
+            self.assertEqual(config.model, "gpt-5-codex")
             self.assertEqual(config.runtime_options["reused_auth"], {"refresh_token": "secret-token"})
 
 

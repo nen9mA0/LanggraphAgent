@@ -34,6 +34,7 @@ from .codex_schema.FileChangeRequestApprovalParams import FileChangeRequestAppro
 from .codex_schema.FileChangeRequestApprovalResponse import FileChangeRequestApprovalResponse
 from .codex_schema.McpServerElicitationRequestResponse import McpServerElicitationRequestResponse
 from .codex_schema.McpServerElicitationRequestParams import McpServerElicitationRequestParams
+from .codex_schema.ClientRequest import TurnInterruptParams
 
 
 _SCHEMA_DIR = Path(__file__).resolve().parent / "codex_schema"
@@ -66,6 +67,8 @@ JSONRPCResponse = _PROTO.JSONRPCResponse
 JSONRPCError = _PROTO.JSONRPCError
 ToolRequestUserInputParams = _PROTO.ToolRequestUserInputParams
 ToolRequestUserInputResponse = _PROTO.ToolRequestUserInputResponse
+GrantedPermissionProfile = _PROTO.GrantedPermissionProfile
+PermissionsRequestApprovalResponse = _PROTO.PermissionsRequestApprovalResponse
 TurnStartedNotification = _PROTO.TurnStartedNotification
 TurnCompletedNotification = _PROTO.TurnCompletedNotification
 TurnDiffUpdatedNotification = _PROTO.TurnDiffUpdatedNotification
@@ -319,6 +322,19 @@ class CodexRuntime(ManagedAgentRuntime):
         if method == "item/fileChange/requestApproval":
             self._respond_to_server_request(request_id, FileChangeRequestApprovalResponse(decision="accept"))
             return
+        if method == "item/permissions/requestApproval":
+            granted_permissions = {}
+            if isinstance(params, dict):
+                granted_permissions = dict(params.get("permissions") or {})
+            self._respond_to_server_request(
+                request_id,
+                PermissionsRequestApprovalResponse(
+                    permissions=GrantedPermissionProfile(**granted_permissions),
+                    scope="turn",
+                    strictAutoReview=False,
+                ),
+            )
+            return
         if method == "item/tool/requestUserInput":
             questions = params.get("questions", []) if isinstance(params, dict) else []
             answers: dict[str, Any] = {}
@@ -327,6 +343,9 @@ class CodexRuntime(ManagedAgentRuntime):
                 if question_id:
                     answers[question_id] = {"answers": [""]}
             self._respond_to_server_request(request_id, ToolRequestUserInputResponse(answers=answers))
+            return
+        if method == "mcpServer/elicitation/request":
+            self._respond_to_server_request(request_id, McpServerElicitationRequestResponse(action="decline", content=None))
             return
 
         self._respond_to_server_request(request_id, {})
@@ -370,12 +389,33 @@ class CodexRuntime(ManagedAgentRuntime):
             self._handle_turn_failed(params if isinstance(params, dict) else {})
             return
         if not method.startswith("item/"):
+            if self._active_turn_id:
+                self._record_event(
+                    self._active_turn_id,
+                    "log",
+                    content=f"unhandled Codex notification: {method}",
+                    payload=params if isinstance(params, dict) else {},
+                )
             return
         if method in {"item/started", "item/updated", "item/completed"}:
             self._handle_item_notification(method, params if isinstance(params, dict) else {})
             return
-        if method in {"item/agentMessage/delta", "item/reasoning/textDelta", "item/commandExecution/outputDelta", "item/fileChange/outputDelta"}:
+        if method in {
+            "item/agentMessage/delta",
+            "item/reasoning/textDelta",
+            "item/commandExecution/outputDelta",
+            "item/fileChange/outputDelta",
+            "item/commandExecution/terminalInteraction",
+        }:
             self._handle_item_delta_notification(method, params if isinstance(params, dict) else {})
+            return
+        if self._active_turn_id:
+            self._record_event(
+                self._active_turn_id,
+                "log",
+                content=f"unhandled Codex item notification: {method}",
+                payload=params if isinstance(params, dict) else {},
+            )
 
     def _handle_turn_update(self, params: dict[str, Any]) -> None:
         """Merge any usage updates emitted before turn completion."""
@@ -486,6 +526,14 @@ class CodexRuntime(ManagedAgentRuntime):
             self._record_event(self._active_turn_id, "log", call_id=item_id, content=delta, payload={"item_type": "commandExecution"})
         elif method == "item/fileChange/outputDelta":
             self._record_event(self._active_turn_id, "log", call_id=item_id, content=delta, payload={"item_type": "fileChange"})
+        elif method == "item/commandExecution/terminalInteraction":
+            self._record_event(
+                self._active_turn_id,
+                "log",
+                call_id=item_id,
+                content=delta,
+                payload={"item_type": "commandExecution", "stream": "terminalInteraction"},
+            )
 
     def _handle_command_execution_item(self, method: str, item_id: str, item: dict[str, Any]) -> None:
         """Map command execution items to tool_use/tool_result events."""
@@ -695,10 +743,6 @@ class CodexRuntime(ManagedAgentRuntime):
         if isinstance(reused_mcp, dict) and reused_mcp:
             args.extend(["-c", f"mcp_servers={json.dumps(reused_mcp, ensure_ascii=True)}"])
 
-        reused_model_provider = self.config.runtime_options.get("reused_model_provider")
-        if reused_model_provider:
-            args.extend(["-c", f"model_provider={json.dumps(str(reused_model_provider), ensure_ascii=True)}"])
-
         reused_reasoning_effort = self.config.runtime_options.get("reused_model_reasoning_effort")
         if reused_reasoning_effort:
             args.extend(["-c", f"model_reasoning_effort={json.dumps(str(reused_reasoning_effort), ensure_ascii=True)}"])
@@ -734,9 +778,6 @@ class CodexRuntime(ManagedAgentRuntime):
         reused_base_url = self.config.runtime_options.get("reused_base_url")
         if reused_base_url:
             payload["base_url"] = str(reused_base_url)
-        reused_model_provider = self.config.runtime_options.get("reused_model_provider")
-        if reused_model_provider:
-            payload["model_provider"] = str(reused_model_provider)
         reused_reasoning_effort = self.config.runtime_options.get("reused_model_reasoning_effort")
         if reused_reasoning_effort:
             payload["model_reasoning_effort"] = str(reused_reasoning_effort)

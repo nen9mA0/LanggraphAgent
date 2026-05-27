@@ -77,7 +77,7 @@ Those snapshots can carry more than model selection when you opt into broader re
   - JSON object of environment variables
 - `.codex/config.toml`
   - optional local provider snapshot
-  - can carry `model`, `base_url`, `model_provider`, `model_reasoning_effort`
+  - can carry `model`, `base_url`, `model_reasoning_effort`
   - can also carry reusable `skills` and `mcp` values
 - `.codex/auth.json`
   - optional local auth snapshot

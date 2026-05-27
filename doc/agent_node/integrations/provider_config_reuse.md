@@ -88,7 +88,7 @@ Applies to:
 ### Reused model
 
 - reused `model` becomes `AgentNodeConfig.model`
-- reused `base_url`, `model_provider`, and `model_reasoning_effort` are preserved in runtime options
+- reused `base_url`, and `model_reasoning_effort` are preserved in runtime options
 
 Minimal example:
 
@@ -96,7 +96,6 @@ Minimal example:
 # .codex/config.toml
 model = "gpt-5-codex"
 base_url = "https://your-codex-gateway.example/v1"
-model_provider = "openai"
 model_reasoning_effort = "high"
 ```
 
@@ -125,7 +124,6 @@ Save the JSON file as `.codex/auth.json`.
 When available, the runtime also emits:
 
 - local `CODEX_HOME/config.toml` with reused `base_url`
-- `-c model_provider=<json>`
 - `-c model_reasoning_effort=<json>`
 
 ### Reused auth

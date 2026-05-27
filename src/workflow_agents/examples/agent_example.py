@@ -8,40 +8,52 @@ if __package__ in {None, ""}:
     ROOT = Path(__file__).resolve().parents[2]
     if str(ROOT) not in sys.path:
         sys.path.insert(0, str(ROOT))
-    from workflow_agents import AgentNodeConfig, AgentRuntimeRegistry, materialize_reused_agent_config
+    from workflow_agents import AgentNodeConfig, AgentRuntimeRegistry, apply_reused_agent_config, build_reused_agent_config, write_reused_agent_config
     from workflow_agents.types import default_agent_config_directory
 else:
-    from .. import AgentNodeConfig, AgentRuntimeRegistry, materialize_reused_agent_config
+    from .. import AgentNodeConfig, AgentRuntimeRegistry, apply_reused_agent_config, build_reused_agent_config, write_reused_agent_config
     from ..types import default_agent_config_directory
 
 
 def prepare_agent_directory(*, working_directory: str, home_directory: str | Path | None = None) -> Path:
     root = Path(working_directory).resolve()
     agent_root = default_agent_config_directory(working_directory=root, name="codex_demo", folder_name="codex_demo")
-    materialize_reused_agent_config(
+    reused = build_reused_agent_config(
         agent_type="codex",
-        source_working_directory=root,
-        target_directory=agent_root,
+        working_directory=agent_root,
         home_directory=home_directory,
         include_home_defaults=True,
+    )
+    write_reused_agent_config(
+        agent_type="codex",
+        target_directory=agent_root,
+        reused_config=reused,
         overwrite=True,
     )
     return agent_root
 
 
 def build_config(*, working_directory: str, home_directory: str | Path | None = None) -> AgentNodeConfig:
-    prepare_agent_directory(working_directory=working_directory, home_directory=home_directory)
-    return AgentNodeConfig.from_provider_defaults(
-        name="codex_demo",
-        folder_name="codex_demo",
+    agent_root = prepare_agent_directory(working_directory=working_directory, home_directory=home_directory)
+    reused = build_reused_agent_config(
         agent_type="codex",
-        working_directory=working_directory,
+        working_directory=agent_root,
         home_directory=home_directory,
-        system_prompt="You are a helpful coding assistant.",
-        context_window_tokens=200_000,
-        auto_start=False,
-        startup_timeout_seconds=30.0,
-        turn_timeout_seconds=300.0,
+        include_home_defaults=True,
+    )
+    return AgentNodeConfig(
+        **apply_reused_agent_config(
+            reused_config=reused,
+            name="codex_demo",
+            folder_name="codex_demo",
+            agent_type="codex",
+            working_directory=working_directory,
+            system_prompt="You are a helpful coding assistant.",
+            context_window_tokens=200_000,
+            auto_start=False,
+            startup_timeout_seconds=30.0,
+            turn_timeout_seconds=300.0,
+        )
     )
 
 

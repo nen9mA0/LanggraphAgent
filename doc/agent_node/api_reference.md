@@ -86,7 +86,7 @@ Configuration for one reusable agent runtime and its optional graph node wrapper
   - reused provider values currently include:
     - `reused_skills`
     - `reused_mcp`
-    - Codex config values such as `reused_base_url`, `reused_model_provider`, and `reused_model_reasoning_effort`
+    - Codex config values such as `reused_base_url`, and `reused_model_reasoning_effort`
     - Codex auth payload as `reused_auth`
 
 ### `AgentNodeConfig.from_provider_defaults(...)`
