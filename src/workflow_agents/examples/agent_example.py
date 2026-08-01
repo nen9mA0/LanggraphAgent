@@ -15,12 +15,24 @@ else:
     from ..types import default_agent_config_directory
 
 
-def prepare_agent_directory(*, working_directory: str, home_directory: str | Path | None = None) -> Path:
+NODE_NAME_1 = "codex_demo"
+
+def _print_event(event) -> bool:
+    if event.event_type == "text" and event.content:
+        print(event.content, end="", flush=True)
+        return True
+    if event.event_type in {"error", "log", "status"}:
+        content = (event.content or "").strip()
+        if content:
+            print(f"\n[{event.event_type}] {content}")
+    return False
+
+def build_config(*, name: str = NODE_NAME_1, working_directory: str, home_directory: str | Path | None = None) -> AgentNodeConfig:
     root = Path(working_directory).resolve()
-    agent_root = default_agent_config_directory(working_directory=root, name="codex_demo", folder_name="codex_demo")
+    agent_root = default_agent_config_directory(working_directory=root, name=name)
     reused = build_reused_agent_config(
         agent_type="codex",
-        working_directory=agent_root,
+        working_directory=root,
         home_directory=home_directory,
         include_home_defaults=True,
     )
@@ -30,22 +42,11 @@ def prepare_agent_directory(*, working_directory: str, home_directory: str | Pat
         reused_config=reused,
         overwrite=True,
     )
-    return agent_root
-
-
-def build_config(*, working_directory: str, home_directory: str | Path | None = None) -> AgentNodeConfig:
-    agent_root = prepare_agent_directory(working_directory=working_directory, home_directory=home_directory)
-    reused = build_reused_agent_config(
-        agent_type="codex",
-        working_directory=agent_root,
-        home_directory=home_directory,
-        include_home_defaults=True,
-    )
     return AgentNodeConfig(
         **apply_reused_agent_config(
             reused_config=reused,
-            name="codex_demo",
-            folder_name="codex_demo",
+            name=name,
+            folder_name=agent_root.name,
             agent_type="codex",
             working_directory=working_directory,
             system_prompt="You are a helpful coding assistant.",
@@ -53,6 +54,7 @@ def build_config(*, working_directory: str, home_directory: str | Path | None = 
             auto_start=False,
             startup_timeout_seconds=30.0,
             turn_timeout_seconds=300.0,
+            runtime_options={"codex_config_mode": "lightweight"},
         )
     )
 
@@ -60,7 +62,7 @@ def build_config(*, working_directory: str, home_directory: str | Path | None = 
 def run_demo(*, working_directory: str) -> None:
     root = Path(working_directory).resolve()
     registry = AgentRuntimeRegistry(base_directory=root / ".workflow" / "agent")
-    runtime = registry.get_or_create(build_config(working_directory=str(root), home_directory=Path.home()))
+    runtime = registry.get_or_create(build_config(name=NODE_NAME_1, working_directory=str(root), home_directory=Path.home()))
     try:
         runtime.start()
         print(f"runtime started, session_id={runtime.session_id!r}")
@@ -82,16 +84,12 @@ def run_demo(*, working_directory: str) -> None:
             while not runtime.is_output_complete():
                 for event in runtime.get_output_events(after_index=next_index):
                     next_index = event.index + 1
-                    if event.event_type == "text" and event.content:
-                        print(event.content, end="", flush=True)
-                        printed_text = True
+                    printed_text = _print_event(event) or printed_text
                 time.sleep(0.2)
 
             for event in runtime.get_output_events(after_index=next_index):
                 next_index = event.index + 1
-                if event.event_type == "text" and event.content:
-                    print(event.content, end="", flush=True)
-                    printed_text = True
+                printed_text = _print_event(event) or printed_text
 
             if printed_text:
                 print()

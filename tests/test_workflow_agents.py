@@ -336,6 +336,149 @@ class ClaudeSDKClient:
         await asyncio.sleep(0)
 """
 
+FAKE_CODEX_SDK = """
+import threading
+import time
+
+
+class Notification:
+    def __init__(self, method, payload):
+        self.method = method
+        self.payload = payload
+
+
+class TurnHandle:
+    def __init__(self, thread, prompt, turn_id):
+        self.thread = thread
+        self.prompt = prompt
+        self.turn_id = turn_id
+        self._interrupt = threading.Event()
+
+    def interrupt(self):
+        self._interrupt.set()
+
+    def stream(self):
+        yield Notification("turn/started", {"threadId": self.thread.id, "turn": {"id": self.turn_id}})
+        yield Notification(
+            "turn/updated",
+            {
+                "threadId": self.thread.id,
+                "turn": {
+                    "id": self.turn_id,
+                    "status": "running",
+                    "usage": {"input_tokens": 1, "output_tokens": 2},
+                },
+            },
+        )
+        yield Notification(
+            "thread/tokenUsage/updated",
+            {
+                "threadId": self.thread.id,
+                "turnId": self.turn_id,
+                "tokenUsage": {
+                    "last": {"inputTokens": 3, "outputTokens": 7, "cachedInputTokens": 0},
+                    "modelContextWindow": 100,
+                },
+            },
+        )
+        yield Notification(
+            "item/reasoning/textDelta",
+            {"threadId": self.thread.id, "turnId": self.turn_id, "itemId": "reason-1", "delta": "sdk-thinking..."},
+        )
+        yield Notification(
+            "item/started",
+            {
+                "threadId": self.thread.id,
+                "item": {"id": "cmd-1", "type": "commandExecution", "command": "echo sdk"},
+            },
+        )
+        yield Notification(
+            "item/commandExecution/outputDelta",
+            {"threadId": self.thread.id, "turnId": self.turn_id, "itemId": "cmd-1", "delta": "sdk-ok"},
+        )
+        yield Notification(
+            "item/completed",
+            {
+                "threadId": self.thread.id,
+                "item": {"id": "cmd-1", "type": "commandExecution", "aggregatedOutput": "sdk-ok"},
+            },
+        )
+        yield Notification(
+            "item/started",
+            {"threadId": self.thread.id, "item": {"id": "msg-1", "type": "agentMessage"}},
+        )
+        yield Notification(
+            "item/agentMessage/delta",
+            {
+                "threadId": self.thread.id,
+                "turnId": self.turn_id,
+                "itemId": "msg-1",
+                "delta": f"sdk-stream:{self.prompt}",
+            },
+        )
+        if "interrupt me" in self.prompt:
+            while not self._interrupt.wait(0.02):
+                time.sleep(0.02)
+            yield Notification(
+                "turn/completed",
+                {
+                    "threadId": self.thread.id,
+                    "turn": {
+                        "id": self.turn_id,
+                        "status": "interrupted",
+                        "usage": {"input_tokens": 4, "output_tokens": 4},
+                    },
+                },
+            )
+            return
+        yield Notification(
+            "item/completed",
+            {
+                "threadId": self.thread.id,
+                "item": {"id": "msg-1", "type": "agentMessage", "text": f"sdk-final:{self.prompt}", "phase": "final_answer"},
+            },
+        )
+        yield Notification(
+            "turn/completed",
+            {
+                "threadId": self.thread.id,
+                "turn": {
+                    "id": self.turn_id,
+                    "status": "completed",
+                    "usage": {"input_tokens": 3, "output_tokens": 7},
+                },
+            },
+        )
+
+
+class Thread:
+    def __init__(self, thread_id, **kwargs):
+        self.id = thread_id
+        self.kwargs = kwargs
+        self.turn_index = 0
+
+    def turn(self, prompt, **kwargs):
+        self.turn_index += 1
+        return TurnHandle(self, prompt, f"turn-{self.turn_index}")
+
+
+class Codex:
+    def __init__(self, config=None):
+        self.config = config
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return None
+
+    def thread_start(self, **kwargs):
+        return Thread("sdk-thread-1", **kwargs)
+
+    def thread_resume(self, thread_id, **kwargs):
+        return Thread(thread_id or "sdk-thread-1", **kwargs)
+"""
+
 
 class WorkflowAgentsTestCase(unittest.TestCase):
     def test_workspace_names_are_suffixed_on_collision(self) -> None:
@@ -419,6 +562,60 @@ class WorkflowAgentsTestCase(unittest.TestCase):
             second = runtime.run_turn("world sdk")
             self.assertEqual(second.session_id, "sdk-session-1")
             self.assertEqual(second.final_output, "sdk-final:world sdk")
+            runtime.shutdown()
+
+    def test_codex_sdk_runtime_keeps_thread_and_streams_tool_events(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            sdk_module = Path(temp_dir) / "openai_codex.py"
+            sdk_module.write_text(FAKE_CODEX_SDK, encoding="utf-8")
+            registry = AgentRuntimeRegistry(base_directory=Path(temp_dir) / ".workflow" / "agent")
+            config = AgentNodeConfig(
+                name="codex_sdk_writer",
+                agent_type="codex_sdk",
+                executable_path=sys.executable,
+                working_directory=temp_dir,
+                context_window_tokens=100,
+                env={"PYTHONPATH": temp_dir},
+                runtime_options={"python_executable": sys.executable},
+            )
+
+            runtime = registry.get_or_create(config)
+            first = runtime.run_turn("hello codex sdk")
+            self.assertEqual(first.status, "completed")
+            self.assertEqual(first.final_output, "sdk-final:hello codex sdk")
+            self.assertTrue(runtime.is_output_complete())
+            self.assertAlmostEqual(runtime.get_context_usage_ratio() or 0.0, 0.1)
+            self.assertEqual(runtime.session_id, "sdk-thread-1")
+            event_types = [event.event_type for event in first.events]
+            self.assertIn("thinking", event_types)
+            self.assertIn("tool_use", event_types)
+            self.assertIn("tool_result", event_types)
+
+            second = runtime.run_turn("world codex sdk")
+            self.assertEqual(second.session_id, "sdk-thread-1")
+            self.assertEqual(second.final_output, "sdk-final:world codex sdk")
+            runtime.shutdown()
+
+    def test_codex_sdk_runtime_interrupts_active_turn(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            sdk_module = Path(temp_dir) / "openai_codex.py"
+            sdk_module.write_text(FAKE_CODEX_SDK, encoding="utf-8")
+            registry = AgentRuntimeRegistry(base_directory=Path(temp_dir) / ".workflow" / "agent")
+            config = AgentNodeConfig(
+                name="codex_sdk_interrupt_writer",
+                agent_type="codex_sdk",
+                executable_path=sys.executable,
+                working_directory=temp_dir,
+                env={"PYTHONPATH": temp_dir},
+                runtime_options={"python_executable": sys.executable},
+            )
+
+            runtime = registry.get_or_create(config)
+            runtime.send_input("interrupt me")
+            runtime._cancel_active_turn("user requested stop", "aborted")
+            result = runtime.wait_for_completion(timeout=1.0)
+            self.assertEqual(result.status, "aborted")
+            self.assertEqual(result.session_id, "sdk-thread-1")
             runtime.shutdown()
 
     def test_codex_runtime_keeps_thread_and_streams_tool_events(self) -> None:
@@ -680,6 +877,30 @@ class WorkflowAgentsTestCase(unittest.TestCase):
             self.assertEqual(reused.runtime_options["reused_model_reasoning_effort"], "high")
             self.assertEqual(reused.auth, {"refresh_token": "secret-token"})
             self.assertEqual(reused.metadata["source_kind"], "codex_config_toml")
+
+    def test_build_reused_agent_config_reads_provider_scoped_codex_base_url(self) -> None:
+        from workflow_agents.config_reuse import build_reused_agent_config
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / ".codex").mkdir(parents=True, exist_ok=True)
+            (root / ".codex" / "config.toml").write_text(
+                'model_provider = "custom"\n'
+                'model = "gpt-5.4"\n'
+                'model_reasoning_effort = "high"\n'
+                '\n'
+                '[model_providers.custom]\n'
+                'name = "custom"\n'
+                'wire_api = "responses"\n'
+                'requires_openai_auth = true\n'
+                'base_url = "https://codex.example.test/v1"\n',
+                encoding="utf-8",
+            )
+
+            reused = build_reused_agent_config(agent_type="codex", working_directory=root, home_directory=root / "home")
+            self.assertEqual(reused.model, "gpt-5.4")
+            self.assertEqual(reused.runtime_options["reused_base_url"], "https://codex.example.test/v1")
+            self.assertEqual(reused.runtime_options["reused_model_reasoning_effort"], "high")
 
     def test_build_reused_agent_config_can_whitelist_skills_and_mcp(self) -> None:
         from workflow_agents.config_reuse import build_reused_agent_config
@@ -954,6 +1175,7 @@ class WorkflowAgentsTestCase(unittest.TestCase):
                 working_directory=temp_dir,
                 auto_start=False,
                 runtime_options={
+                    "reused_base_url": "https://codex.example.test",
                     "reused_skills": ["skill-a", "skill-b"],
                     "reused_mcp": {"demo": {"command": "demo-mcp", "args": ["--stdio"]}},
                     "reused_model_reasoning_effort": "high",
@@ -963,11 +1185,93 @@ class WorkflowAgentsTestCase(unittest.TestCase):
             runtime = CodexRuntime(config, workspace)
             args = runtime._config_override_args()
             joined = " ".join(args)
+            self.assertIn("base_url=", joined)
             self.assertIn("skills.config=", joined)
             self.assertIn("mcp_servers=", joined)
             self.assertIn("model_reasoning_effort=", joined)
             self.assertIn('"skill-a"', joined)
             self.assertIn('"demo"', joined)
+
+    def test_codex_runtime_lightweight_mode_does_not_override_codex_home(self) -> None:
+        from workflow_agents.runtime.codex import CodexRuntime
+        from workflow_agents.storage import AgentWorkspace
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            workspace = AgentWorkspace(node_name="reviewer", folder_name="reviewer", root=root / ".workflow" / "agent" / "reviewer")
+            workspace.ensure()
+            config = AgentNodeConfig(
+                name="reviewer",
+                folder_name="reviewer",
+                agent_type="codex",
+                executable_path="codex",
+                working_directory=temp_dir,
+                auto_start=False,
+                runtime_options={"codex_config_mode": "lightweight"},
+            )
+
+            runtime = CodexRuntime(config, workspace)
+            env = runtime._launch_env()
+
+            self.assertEqual(runtime._codex_config_mode(), "lightweight")
+            self.assertNotIn("CODEX_HOME", env)
+
+    def test_codex_runtime_uses_thread_token_usage_updates(self) -> None:
+        from workflow_agents.runtime.base import _TurnContext
+        from workflow_agents.runtime.codex import CodexRuntime
+        from workflow_agents.storage import AgentWorkspace
+        from workflow_agents.types import TokenUsageSnapshot, TurnResult, utc_now_iso
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            workspace = AgentWorkspace(node_name="reviewer", folder_name="reviewer", root=root / ".workflow" / "agent" / "reviewer")
+            workspace.ensure()
+            config = AgentNodeConfig(
+                name="reviewer",
+                folder_name="reviewer",
+                agent_type="codex",
+                executable_path="codex",
+                working_directory=temp_dir,
+                auto_start=False,
+                context_window_tokens=200_000,
+            )
+
+            runtime = CodexRuntime(config, workspace)
+            turn_id = "local-turn-1"
+            runtime._active_turn_id = turn_id
+            runtime._active_remote_turn_id = "remote-turn-1"
+            runtime._current_turn = _TurnContext(
+                result=TurnResult(
+                    turn_id=turn_id,
+                    status="running",
+                    started_at=utc_now_iso(),
+                    usage=TokenUsageSnapshot(context_window_tokens=config.context_window_tokens),
+                )
+            )
+
+            runtime._handle_thread_token_usage_updated(
+                {
+                    "threadId": "thread-1",
+                    "turnId": "remote-turn-1",
+                    "tokenUsage": {
+                        "last": {
+                            "inputTokens": 12,
+                            "outputTokens": 34,
+                            "cachedInputTokens": 5,
+                            "reasoningOutputTokens": 0,
+                            "totalTokens": 51,
+                        },
+                        "modelContextWindow": 456000,
+                    },
+                }
+            )
+            runtime._handle_turn_completed({"turn": {"id": "remote-turn-1", "status": "completed", "usage": {}}})
+
+            result = runtime.wait_for_completion(timeout=0.1)
+            self.assertEqual(result.usage.input_tokens, 12)
+            self.assertEqual(result.usage.output_tokens, 34)
+            self.assertEqual(result.usage.cache_read_tokens, 5)
+            self.assertEqual(result.usage.context_window_tokens, 456000)
 
     def test_codex_runtime_prepares_local_codex_home_with_reused_auth_and_base_url(self) -> None:
         from workflow_agents.runtime.codex import CodexRuntime
@@ -1137,6 +1441,7 @@ class WorkflowAgentsTestCase(unittest.TestCase):
 
             self.assertEqual(config.folder_name, "codex_demo")
             self.assertEqual(config.model, "gpt-5-codex")
+            self.assertEqual(config.runtime_options["codex_config_mode"], "lightweight")
             self.assertEqual(config.runtime_options["reused_base_url"], "https://codex.example.test")
             self.assertEqual(config.runtime_options["reused_model_reasoning_effort"], "high")
             self.assertNotIn("reused_auth", config.runtime_options)

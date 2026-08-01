@@ -8,7 +8,7 @@ from typing import Any, Literal
 from uuid import uuid4
 
 
-AgentKind = Literal["claude", "claude_sdk", "codex"]
+AgentKind = Literal["claude", "claude_sdk", "codex", "codex_sdk"]
 TurnStatus = Literal["running", "completed", "failed", "aborted", "timeout"]
 EventType = Literal["text", "thinking", "tool_use", "tool_result", "status", "error", "log"]
 

@@ -25,7 +25,7 @@ This creates:
 - `.workflow/agent/claude_sdk_writer`
 - `.workflow/agent/codex_reviewer`
 
-It also materializes minimal provider snapshots when project-level settings exist:
+It can also write minimal provider snapshots into those folders:
 
 - `claude_writer/.claude/settings.json`
 - `claude_sdk_writer/.claude/settings.json`
@@ -78,6 +78,7 @@ Those snapshots can carry more than model selection when you opt into broader re
 - `.codex/config.toml`
   - optional local provider snapshot
   - can carry `model`, `base_url`, `model_reasoning_effort`
+  - `base_url` may be either top-level or provider-scoped through `model_provider` and `[model_providers.<name>]`
   - can also carry reusable `skills` and `mcp` values
 - `.codex/auth.json`
   - optional local auth snapshot
@@ -106,15 +107,25 @@ python -m workflow_agents.examples.real_agent_demo `
 
 ## Config Resolution Order
 
-The demo constructs configs with `AgentNodeConfig.from_provider_defaults(...)`.
+The demo constructs configs with the standalone reuse helpers:
 
-For each node, provider settings are resolved in this order:
+1. `build_reused_agent_config(...)`
+2. `apply_reused_agent_config(...)`
 
-1. the agent-local snapshot under `.workflow/agent/<folder>`
-2. if that snapshot yields no reusable values, the project-level provider config under the working directory
-3. user-home defaults only through that fallback path when supported by the backend
+For each node, the demo currently reads reusable provider settings from that node's folder under `.workflow/agent/<folder>`, and it enables home-default fallback where the example code asks for it.
 
-This lets you prepare local agent folders once, then edit only one node's snapshot without affecting the others.
+This keeps config reuse explicit: the caller chooses which directory to inspect, and the merged result is then passed into `AgentNodeConfig(...)`.
+
+For Codex, there are two runtime styles:
+
+- `isolated`
+  - the runtime prepares an agent-local `CODEX_HOME`
+  - local `.codex/config.toml` and `.codex/auth.json` snapshots become the effective provider config
+- `lightweight`
+  - the runtime keeps the normal Codex home configuration active
+  - `AgentNodeConfig` and reuse-derived values become per-agent overrides on top of the system config
+
+The simple `agent_example.py` uses `lightweight` by default so provider routing defined in the normal Codex home config continues to work.
 
 ## Generated Runtime Files
 

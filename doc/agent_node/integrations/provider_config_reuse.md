@@ -14,25 +14,27 @@ Current reusable fields:
 
 Public entry points:
 
+- `apply_reused_agent_config(...)`
 - `build_reused_agent_config(...)`
-- `materialize_reused_agent_config(...)`
-- `AgentNodeConfig.from_provider_defaults(...)`
+- `write_reused_agent_config(...)`
 
 ## Resolution Model
 
 ### Read path
 
-`AgentNodeConfig.from_provider_defaults(...)` resolves provider settings in this order:
+`build_reused_agent_config(...)` reads from the `working_directory` you pass in, plus optional home defaults when `include_home_defaults=True`.
 
-1. `provider_config_directory`, if given
-2. `working_directory`, if the preferred directory yielded no reusable values
-3. user-home provider defaults through that fallback path when supported
+Common patterns:
 
-This keeps agent-local snapshots independent while preserving project-level defaults as fallback.
+1. read from `.workflow/agent/<folder>` when you want one node to follow its own local snapshot
+2. read from the project root when you want to initialize a new node snapshot from project-level provider config
+3. include home defaults only when you explicitly want that fallback merged in
+
+The helper does not perform an automatic multi-directory fallback. The caller decides which directory should be inspected.
 
 ### Write path
 
-`materialize_reused_agent_config(...)` writes only a minimal local snapshot:
+`write_reused_agent_config(...)` writes only a minimal local snapshot:
 
 - Claude and Claude SDK:
   - `.claude/settings.json`
@@ -41,6 +43,32 @@ This keeps agent-local snapshots independent while preserving project-level defa
   - `.codex/auth.json`
 
 The real-agent demo uses this to prepare stable per-node folders under `.workflow/agent/`.
+
+### Apply path
+
+`apply_reused_agent_config(...)` merges one `ReusedAgentConfig` into `AgentNodeConfig(...)` constructor kwargs.
+
+Typical pattern:
+
+```python
+reused = build_reused_agent_config(
+    agent_type="codex",
+    working_directory="E:/Project/program_workflow/.workflow/agent/codex_reviewer",
+    include_home_defaults=True,
+    reuse_fields=("model",),
+)
+
+config = AgentNodeConfig(
+    **apply_reused_agent_config(
+        reused_config=reused,
+        name="reviewer",
+        folder_name="codex_reviewer",
+        agent_type="codex",
+        executable_path="codex",
+        working_directory="E:/Project/program_workflow",
+    )
+)
+```
 
 ## Claude Backends
 
@@ -89,6 +117,9 @@ Applies to:
 
 - reused `model` becomes `AgentNodeConfig.model`
 - reused `base_url`, and `model_reasoning_effort` are preserved in runtime options
+- `base_url` may come from either:
+  - top-level `base_url`
+  - or `model_provider = "..."` plus `[model_providers.<name>].base_url`
 
 Minimal example:
 
@@ -125,6 +156,15 @@ When available, the runtime also emits:
 
 - local `CODEX_HOME/config.toml` with reused `base_url`
 - `-c model_reasoning_effort=<json>`
+
+### Lightweight mode
+
+If `runtime_options["codex_config_mode"] == "lightweight"`:
+
+- the runtime does not override `CODEX_HOME`
+- Codex continues using the normal home configuration
+- `AgentNodeConfig` values act as per-agent overrides on top of that baseline
+- this is useful when your real provider routing is defined in the default Codex home config, for example through `model_provider` and `[model_providers.<name>]`
 
 ### Reused auth
 

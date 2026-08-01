@@ -62,7 +62,7 @@ def build_reused_agent_config(
             reuse_fields=reuse_fields,
             include_home_defaults=include_home_defaults,
         )
-    if agent_type == "codex":
+    if agent_type in {"codex", "codex_sdk"}:
         return _load_codex_reused_config(
             workdir=workdir,
             home=home,
@@ -118,7 +118,7 @@ def write_reused_agent_config(
     if agent_type in {"claude", "claude_sdk"}:
         written_files = _write_claude_snapshot(target_root, reused_config, overwrite=overwrite)
         skipped_fields: list[str] = []
-    elif agent_type == "codex":
+    elif agent_type in {"codex", "codex_sdk"}:
         written_files, skipped_fields = _write_codex_snapshot(target_root, reused_config, overwrite=overwrite)
     else:
         raise ValueError(f"unsupported agent_type for config materialization: {agent_type}")
@@ -210,8 +210,9 @@ def _load_codex_reused_config(
 
     model = str(merged.get("model", "") or "") if "model" in reuse_fields else ""
     runtime_options: dict[str, Any] = {}
-    if "model" in reuse_fields and "base_url" in merged:
-        runtime_options["reused_base_url"] = merged["base_url"]
+    reused_base_url = _extract_codex_base_url(merged) if "model" in reuse_fields else ""
+    if reused_base_url:
+        runtime_options["reused_base_url"] = reused_base_url
     if "model" in reuse_fields and "model_reasoning_effort" in merged:
         runtime_options["reused_model_reasoning_effort"] = merged["model_reasoning_effort"]
     skills = list(merged.get("skills", []) or []) if "skills" in reuse_fields and isinstance(merged.get("skills"), list) else []
@@ -240,6 +241,28 @@ def _read_json_object(path: Path) -> dict[str, Any]:
     except Exception:
         return {}
     return payload if isinstance(payload, dict) else {}
+
+
+def _extract_codex_base_url(payload: dict[str, Any]) -> str:
+    """Extract a usable Codex base_url from either top-level or provider-scoped config."""
+    direct_base_url = payload.get("base_url")
+    if isinstance(direct_base_url, str) and direct_base_url:
+        return direct_base_url
+
+    provider_name = str(payload.get("model_provider", "") or "").strip()
+    if not provider_name:
+        return ""
+
+    model_providers = payload.get("model_providers")
+    if not isinstance(model_providers, dict):
+        return ""
+
+    provider_payload = model_providers.get(provider_name)
+    if not isinstance(provider_payload, dict):
+        return ""
+
+    provider_base_url = provider_payload.get("base_url")
+    return str(provider_base_url or "").strip()
 
 
 def _read_simple_toml(path: Path) -> dict[str, Any]:

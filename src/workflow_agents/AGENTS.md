@@ -7,6 +7,7 @@ Current supported backends:
 - `claude`
 - `claude_sdk`
 - `codex`
+- `codex_sdk`
 
 ## First Reads
 
@@ -75,6 +76,10 @@ If this is a docs task, go to `doc/agent_node/README.md`.
   - async SDK bridge worker
 - `runtime/codex.py`
   - Codex app-server JSON-RPC runtime
+- `runtime/codex_sdk.py`
+  - Codex Python SDK runtime via worker process
+- `runtime/codex_sdk_worker.py`
+  - sync SDK bridge worker
 - `runtime/AGENTS.md`
   - runtime-specific notes and Codex schema navigation
 - `examples/`
@@ -143,6 +148,13 @@ Meaning:
 - uses JSON-RPC
 - supports thread resume, turn start, turn interrupt, item streaming, and basic server-initiated request handling
 
+### Codex SDK
+
+- sync parent runtime + sync worker process
+- worker imports `openai_codex`
+- uses `Codex.thread_start` / `thread_resume` and `TurnHandle.stream()` / `interrupt()`
+- reuses the same `.codex` snapshot strategy as the CLI runtime
+
 ## Safe Modification Points
 
 If changing behavior, start here:
@@ -151,6 +163,7 @@ If changing behavior, start here:
   - `runtime/claude.py`
   - `runtime/claude_sdk.py`
   - `runtime/codex.py`
+  - `runtime/codex_sdk.py`
 - change shared lifecycle semantics:
   - `runtime/base.py`
 - change workspace naming/persistence:

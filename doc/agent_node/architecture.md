@@ -9,6 +9,7 @@ Supported backends:
 - `claude`
 - `claude_sdk`
 - `codex`
+- `codex_sdk`
 
 ## Design Rules
 
@@ -145,6 +146,12 @@ Notes:
 
 - launches `codex app-server --listen stdio://`
 - uses JSON-RPC for thread lifecycle and turn execution
+- persists the Codex thread id as `session_id`
+
+### Codex SDK
+
+- launches a dedicated Python worker process
+- the worker talks to `openai_codex` and streams turn notifications back to the parent runtime
 - persists the Codex thread id as `session_id`
 
 ## Further Reading

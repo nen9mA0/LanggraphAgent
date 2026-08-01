@@ -61,31 +61,65 @@ If you want a node to reuse provider-native defaults without copying full provid
 ```python
 from langgraph.graph import END, START, StateGraph
 
-from workflow_agents import AgentGraphState, AgentNode, AgentNodeConfig, AgentRuntimeRegistry
+from workflow_agents import (
+    AgentGraphState,
+    AgentNode,
+    AgentNodeConfig,
+    AgentRuntimeRegistry,
+    apply_reused_agent_config,
+    build_reused_agent_config,
+)
+from workflow_agents.types import default_agent_config_directory
 
 registry = AgentRuntimeRegistry()
+root = "E:/Project/program_workflow"
+writer_root = default_agent_config_directory(
+    working_directory=root,
+    name="writer",
+    folder_name="claude_writer",
+)
+reviewer_root = default_agent_config_directory(
+    working_directory=root,
+    name="reviewer",
+    folder_name="codex_reviewer",
+)
 
 writer = AgentNode(
-    config=AgentNodeConfig.from_provider_defaults(
-        name="writer",
-        folder_name="claude_writer",
-        agent_type="claude",
-        executable_path="claude",
-        working_directory="E:/Project/program_workflow",
-        provider_config_directory="E:/Project/program_workflow/.workflow/agent/claude_writer",
-        targets=("reviewer",),
+    config=AgentNodeConfig(
+        **apply_reused_agent_config(
+            reused_config=build_reused_agent_config(
+                agent_type="claude",
+                working_directory=writer_root,
+                include_home_defaults=True,
+                reuse_fields=("model",),
+            ),
+            name="writer",
+            folder_name="claude_writer",
+            agent_type="claude",
+            executable_path="claude",
+            working_directory=root,
+            targets=("reviewer",),
+        )
     ),
     registry=registry,
 )
 
 reviewer = AgentNode(
-    config=AgentNodeConfig.from_provider_defaults(
-        name="reviewer",
-        folder_name="codex_reviewer",
-        agent_type="codex",
-        executable_path="codex",
-        working_directory="E:/Project/program_workflow",
-        provider_config_directory="E:/Project/program_workflow/.workflow/agent/codex_reviewer",
+    config=AgentNodeConfig(
+        **apply_reused_agent_config(
+            reused_config=build_reused_agent_config(
+                agent_type="codex",
+                working_directory=reviewer_root,
+                include_home_defaults=True,
+                reuse_fields=("model",),
+            ),
+            name="reviewer",
+            folder_name="codex_reviewer",
+            agent_type="codex",
+            executable_path="codex",
+            working_directory=root,
+            runtime_options={"codex_config_mode": "lightweight"},
+        )
     ),
     registry=registry,
 )
@@ -110,6 +144,12 @@ print(result.status)
 print(result.final_output)
 runtime.shutdown()
 ```
+
+For Codex, `runtime_options={"codex_config_mode": "lightweight"}` means:
+
+- keep using the default Codex home configuration
+- do not force an isolated `CODEX_HOME`
+- let `AgentNodeConfig` values act as per-agent overrides on top of the normal system config
 
 ## Next Docs
 

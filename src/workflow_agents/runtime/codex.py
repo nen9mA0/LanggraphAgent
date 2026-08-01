@@ -119,11 +119,10 @@ class CodexRuntime(ManagedAgentRuntime):
         * 否则用thread/start启动新会话，并保存session_id
         """
         executable = self._resolve_executable()
-        codex_home = self._prepare_codex_home()
         process = subprocess.Popen(
             [executable, "app-server", "--listen", "stdio://", *self._config_override_args(), *self.config.cli_args],
             cwd=str(self.config.normalized_working_directory()),
-            env={**os.environ, **self.config.env, "CODEX_HOME": str(codex_home)},
+            env=self._launch_env(),
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -388,6 +387,19 @@ class CodexRuntime(ManagedAgentRuntime):
         if method == "turn/failed":
             self._handle_turn_failed(params if isinstance(params, dict) else {})
             return
+        if method == "thread/status/changed":
+            return
+        if method == "thread/tokenUsage/updated":
+            self._handle_thread_token_usage_updated(params if isinstance(params, dict) else {})
+            return
+        if method == "account/rateLimits/updated":
+            return
+        if method == "warning":
+            self._handle_warning_notification(params if isinstance(params, dict) else {})
+            return
+        if method == "error":
+            self._handle_error_notification(params if isinstance(params, dict) else {})
+            return
         if not method.startswith("item/"):
             if self._active_turn_id:
                 self._record_event(
@@ -416,6 +428,57 @@ class CodexRuntime(ManagedAgentRuntime):
                 content=f"unhandled Codex item notification: {method}",
                 payload=params if isinstance(params, dict) else {},
             )
+
+    def _handle_warning_notification(self, params: dict[str, Any]) -> None:
+        """Convert Codex warning notifications into runtime log events."""
+        if not self._active_turn_id:
+            return
+        message = str(params.get("message", "") or "")
+        self._record_event(
+            self._active_turn_id,
+            "log",
+            content=message or "codex warning",
+            payload=dict(params),
+        )
+
+    def _handle_error_notification(self, params: dict[str, Any]) -> None:
+        """Convert Codex transport or backend errors into runtime error events."""
+        if not self._active_turn_id:
+            return
+        error_payload = params.get("error", {}) or {}
+        message = ""
+        if isinstance(error_payload, dict):
+            base = str(error_payload.get("message", "") or "")
+            details = str(error_payload.get("additionalDetails", "") or "")
+            message = f"{base}: {details}" if base and details else (base or details)
+        self._record_event(
+            self._active_turn_id,
+            "error",
+            content=message or "codex error",
+            payload=dict(params),
+        )
+
+    def _handle_thread_token_usage_updated(self, params: dict[str, Any]) -> None:
+        """Merge thread-level token usage updates into the active turn snapshot."""
+        if not self._active_turn_id:
+            return
+        turn_id = str(params.get("turnId", "") or "")
+        if self._active_remote_turn_id and turn_id and turn_id != self._active_remote_turn_id:
+            return
+        token_usage = params.get("tokenUsage", {}) or {}
+        last_usage = token_usage.get("last", {}) or {}
+        if not isinstance(last_usage, dict) or not last_usage:
+            return
+        self._replace_usage(
+            self._active_turn_id,
+            TokenUsageSnapshot(
+                input_tokens=int(last_usage.get("inputTokens", 0) or 0),
+                output_tokens=int(last_usage.get("outputTokens", 0) or 0),
+                cache_read_tokens=int(last_usage.get("cachedInputTokens", 0) or 0),
+                cache_write_tokens=0,
+                context_window_tokens=token_usage.get("modelContextWindow") or self.config.context_window_tokens,
+            ),
+        )
 
     def _handle_turn_update(self, params: dict[str, Any]) -> None:
         """Merge any usage updates emitted before turn completion."""
@@ -458,12 +521,16 @@ class CodexRuntime(ManagedAgentRuntime):
             status=final_status,
             error=final_error,
             session_id=self._thread_id,
-            usage=TokenUsageSnapshot(
-                input_tokens=int(usage.get("input_tokens", 0) or 0),
-                output_tokens=int(usage.get("output_tokens", 0) or 0),
-                cache_read_tokens=int(usage.get("cache_read_tokens", 0) or 0),
-                cache_write_tokens=int(usage.get("cache_write_tokens", 0) or 0),
-                context_window_tokens=self.config.context_window_tokens,
+            usage=(
+                TokenUsageSnapshot(
+                    input_tokens=int(usage.get("input_tokens", 0) or 0),
+                    output_tokens=int(usage.get("output_tokens", 0) or 0),
+                    cache_read_tokens=int(usage.get("cache_read_tokens", 0) or 0),
+                    cache_write_tokens=int(usage.get("cache_write_tokens", 0) or 0),
+                    context_window_tokens=self.config.context_window_tokens,
+                )
+                if usage
+                else None
             ),
         )
         self._active_turn_id = ""
@@ -735,6 +802,10 @@ class CodexRuntime(ManagedAgentRuntime):
     def _config_override_args(self) -> list[str]:
         """Build ``codex -c`` overrides from reused model-provider config."""
         args: list[str] = []
+        reused_base_url = self.config.runtime_options.get("reused_base_url")
+        if reused_base_url:
+            args.extend(["-c", f"base_url={json.dumps(str(reused_base_url), ensure_ascii=True)}"])
+
         reused_skills = self.config.runtime_options.get("reused_skills")
         if isinstance(reused_skills, list) and reused_skills:
             args.extend(["-c", f"skills.config={json.dumps(reused_skills, ensure_ascii=True)}"])
@@ -747,6 +818,19 @@ class CodexRuntime(ManagedAgentRuntime):
         if reused_reasoning_effort:
             args.extend(["-c", f"model_reasoning_effort={json.dumps(str(reused_reasoning_effort), ensure_ascii=True)}"])
         return args
+
+    def _launch_env(self) -> dict[str, str]:
+        """Build the Codex process environment for the configured config mode."""
+        env = {**os.environ, **self.config.env}
+        if self._codex_config_mode() == "lightweight":
+            return env
+        env["CODEX_HOME"] = str(self._prepare_codex_home())
+        return env
+
+    def _codex_config_mode(self) -> str:
+        """Return the Codex config mode for this runtime."""
+        mode = str(self.config.runtime_options.get("codex_config_mode", "isolated") or "isolated").strip().lower()
+        return "lightweight" if mode == "lightweight" else "isolated"
 
     def _prepare_codex_home(self) -> Path:
         """Prepare an isolated CODEX_HOME with minimal reused config and auth state."""

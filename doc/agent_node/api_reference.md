@@ -16,9 +16,10 @@ This document covers the public surface exported by `workflow_agents`.
 - `ReusedConfigSnapshot`
 - `TokenUsageSnapshot`
 - `TurnResult`
+- `apply_reused_agent_config`
 - `build_agent_node`
 - `build_reused_agent_config`
-- `materialize_reused_agent_config`
+- `write_reused_agent_config`
 
 Internal runtime classes and backend adapters are intentionally documented under `internals/` and `integrations/`, not here.
 
@@ -88,33 +89,15 @@ Configuration for one reusable agent runtime and its optional graph node wrapper
     - `reused_mcp`
     - Codex config values such as `reused_base_url`, and `reused_model_reasoning_effort`
     - Codex auth payload as `reused_auth`
+    - Codex config mode as `codex_config_mode`, with `isolated` and `lightweight`
 
-### `AgentNodeConfig.from_provider_defaults(...)`
+Agent config reuse is handled by the standalone helpers documented below:
 
-Builds a config while reusing a minimal subset of provider-native settings.
+1. `build_reused_agent_config(...)`
+2. `apply_reused_agent_config(...)`
+3. `write_reused_agent_config(...)`
 
-Important parameters:
-
-- `provider_config_directory`
-  - preferred directory to inspect first for local `.claude` or `.codex` snapshots
-- `reuse_fields`
-  - allowed reusable field names
-- `home_directory`
-  - optional override for tests
-
-Behavior:
-
-1. load the minimal reusable provider settings
-2. if `provider_config_directory` was given but produced no reusable values, retry with `working_directory`
-3. merge the reused values into the config
-4. let explicit keyword arguments win
-
-If `reuse_fields` includes `skills` or `mcp`, those values are exposed through `runtime_options` for backend-specific consumption.
-
-For Codex, `from_provider_defaults(...)` also reuses:
-
-- `base_url` from `.codex/config.toml`
-- `auth.json` from `.codex/auth.json`
+This keeps reusable provider settings separate from plain `AgentNodeConfig` construction.
 
 ## `AgentNode`
 
@@ -272,6 +255,12 @@ Helper methods:
 
 ## Provider Config Reuse
 
+Typical flow:
+
+1. call `build_reused_agent_config(...)` to read a minimal reusable subset from provider-native config files
+2. call `apply_reused_agent_config(...)` to merge those values into `AgentNodeConfig(...)` constructor kwargs
+3. call `write_reused_agent_config(...)` when you want to persist a minimal agent-local snapshot under `.workflow/agent/<folder>`
+
 ### `build_reused_agent_config(...)`
 
 Reads a minimal reusable subset from provider-native config files.
@@ -297,7 +286,56 @@ Important output fields:
 - `runtime_options`
 - `metadata`
 
-### `materialize_reused_agent_config(...)`
+For Codex, base URL reuse supports both:
+
+- top-level `base_url`
+- provider-scoped `model_provider = "..."`
+  plus `[model_providers.<name>].base_url`
+
+### `apply_reused_agent_config(...)`
+
+Merges one `ReusedAgentConfig` into `AgentNodeConfig(...)` keyword arguments.
+
+Behavior:
+
+- sets `model` only when the caller did not already provide one
+- exposes reused `skills` as `runtime_options["reused_skills"]`
+- exposes reused `mcp` as `runtime_options["reused_mcp"]`
+- exposes Codex auth as `runtime_options["reused_auth"]` only when `reuse_fields` includes `auth`
+- lets explicit `runtime_options` provided by the caller win
+
+Typical usage:
+
+```python
+config = AgentNodeConfig(
+    **apply_reused_agent_config(
+        reused_config=reused,
+        name="reviewer",
+        folder_name="codex_reviewer",
+        agent_type="codex",
+        executable_path="codex",
+        working_directory="E:/Project/program_workflow",
+    )
+)
+```
+
+For Codex, you can also keep the default home configuration active and use `AgentNodeConfig` as a lightweight overlay:
+
+```python
+config = AgentNodeConfig(
+    **apply_reused_agent_config(
+        reused_config=reused,
+        name="reviewer",
+        folder_name="codex_reviewer",
+        agent_type="codex",
+        executable_path="codex",
+        working_directory="E:/Project/program_workflow",
+        runtime_options={"codex_config_mode": "lightweight"},
+    )
+)
+```
+
+### `write_reused_agent_config(...)`
 
 Writes a minimal agent-local provider snapshot into a target directory.
 

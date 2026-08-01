@@ -16,6 +16,7 @@ if str(SRC) not in sys.path:
 from workflow_agents.runtime.claude import ClaudeCodeRuntime
 from workflow_agents.runtime.claude_sdk import ClaudeSDKRuntime
 from workflow_agents.runtime.codex import CodexRuntime
+from workflow_agents.runtime.codex_sdk import CodexSDKRuntime
 from workflow_agents.storage import AgentWorkspace
 from workflow_agents.types import AgentNodeConfig
 
@@ -200,6 +201,39 @@ class ClaudeSDKRuntimeErrorPathTestCase(unittest.TestCase):
                 with self.assertRaises(RuntimeError) as exc:
                     runtime.start()
                 self.assertIn("definitely_missing_claude_sdk_module", str(exc.exception))
+            finally:
+                runtime.shutdown()
+
+
+class CodexSDKRuntimeErrorPathTestCase(unittest.TestCase):
+    """Always-on tests for Codex SDK runtime failure paths."""
+
+    def test_codex_sdk_runtime_missing_sdk_reports_clear_error(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace_root = Path(temp_dir) / ".workflow" / "agent" / "codex_sdk_runtime_smoke"
+            workspace = AgentWorkspace(
+                node_name="codex_sdk_runtime_smoke",
+                folder_name="codex_sdk_runtime_smoke",
+                root=workspace_root,
+            )
+            config = AgentNodeConfig(
+                name="codex_sdk_runtime_smoke",
+                folder_name="codex_sdk_runtime_smoke",
+                agent_type="codex_sdk",
+                executable_path=sys.executable,
+                working_directory=temp_dir,
+                auto_start=False,
+                startup_timeout_seconds=5.0,
+                runtime_options={
+                    "python_executable": sys.executable,
+                    "sdk_module": "definitely_missing_codex_sdk_module",
+                },
+            )
+            runtime = CodexSDKRuntime(config, workspace)
+            try:
+                with self.assertRaises(RuntimeError) as exc:
+                    runtime.start()
+                self.assertIn("definitely_missing_codex_sdk_module", str(exc.exception))
             finally:
                 runtime.shutdown()
 
